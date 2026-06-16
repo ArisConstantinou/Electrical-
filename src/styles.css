@@ -1,0 +1,88 @@
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  background: #9fb9c8;
+  color: #eef6f4;
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+#game-canvas {
+  cursor: grab;
+  display: block;
+  height: 100%;
+  touch-action: none;
+  width: 100%;
+}
+
+#game-canvas:active {
+  cursor: grabbing;
+}
+
+#game-canvas.camera-fps-active {
+  cursor: crosshair;
+}
+
+#hud {
+  background: rgba(13, 29, 31, 0.72);
+  border: 1px solid rgba(206, 230, 223, 0.35);
+  border-radius: 6px;
+  box-sizing: border-box;
+  left: 14px;
+  max-width: min(520px, calc(100vw - 28px));
+  padding: 12px 14px;
+  position: fixed;
+  top: 14px;
+}
+
+.hud-row {
+  align-items: center;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+}
+
+#fps-readout {
+  color: #d8c15e;
+  font-weight: 700;
+}
+
+#status-readout {
+  color: #cfe4de;
+  font-size: 13px;
+  line-height: 1.45;
+  margin-top: 8px;
+  white-space: pre-wrap;
+}
+
+@media (max-width: 720px), (max-height: 460px) {
+  .lil-gui {
+    display: none !important;
+  }
+
+  #hud {
+    left: 10px;
+    max-width: calc(100vw - 20px);
+    padding: 9px 10px;
+    top: 10px;
+  }
+
+  .hud-row {
+    gap: 10px;
+  }
+
+  .hud-row h1 {
+    font-size: 15px;
+    margin: 0;
+  }
+
+  #status-readout {
+    font-size: 12px;
+    line-height: 1.35;
+  }
+}
