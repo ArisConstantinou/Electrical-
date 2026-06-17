@@ -6,18 +6,36 @@ import './styles.css';
 type BodyKind = 'bulldozer' | 'blade' | 'wall' | 'column' | 'deck' | 'debris';
 type QualityLevel = 'Low' | 'Medium' | 'High';
 type HouseBlockFace = 'front' | 'back' | 'left' | 'right' | 'roof-front' | 'roof-back';
+type StructuralMaterialId = 'brickMasonry' | 'mortarJoint' | 'roofPanel' | 'bulldozerSteel';
 type WallChunkSide = 'left' | 'right';
+type DemolitionReplayEventType =
+  | 'chain-reaction'
+  | 'first-contact'
+  | 'full-demolition'
+  | 'roof-collapse'
+  | 'wall-cracked'
+  | 'wall-damaged'
+  | 'wall-destroyed'
+  | 'wall-detached';
+type ReplayCameraMode = 'free' | 'follow-bulldozer' | 'follow-wall' | 'gameplay' | 'top-down' | 'cinematic';
 
 interface SettingsValues {
   bridgeCollapseThreshold: number;
   columnStageOneDamage: number;
   columnStageTwoDamage: number;
+  criticalBearingDelayFrames: number;
+  criticalBearingLeanSpeed: number;
   debrisPickupRange: number;
   destructionSpeed: number;
   engineTorque: number;
   gravity: number;
   maxCarryMass: number;
   quality: QualityLevel;
+  roofDropSupportRatio: number;
+  secondaryImpactThreshold: number;
+  supportReleaseRatio: number;
+  wallBreakDamage: number;
+  wallImpactDamageScale: number;
 }
 
 interface PhysicsEntity {
@@ -44,6 +62,7 @@ interface WallBlockInfo {
   face: HouseBlockFace;
   home: THREE.Vector3;
   row: number;
+  sag: THREE.Vector3;
 }
 
 interface StaticWallVisualInfo {
@@ -69,6 +88,69 @@ interface WallChunk {
   fragmented: boolean;
   side: WallChunkSide;
   sourceBricks: WallBrickBlueprint[];
+}
+
+interface WallFaceStress {
+  collapse: number;
+  criticalBearingSteps: number;
+  direction: number;
+  foundationRatio: number;
+  imbalance: number;
+  lastBearingContactStep: number;
+  lean: number;
+  supportRatio: number;
+}
+
+interface MaterialProfile {
+  compressiveLimit: number;
+  damping: number;
+  density: number;
+  fractureEnergy: number;
+  friction: number;
+  minFragmentSize: number;
+  restitution: number;
+  shearLimit: number;
+  stiffness: number;
+  tensileLimit: number;
+}
+
+interface StructuralNode {
+  active: boolean;
+  centerOfMass: THREE.Vector3;
+  entity: PhysicsEntity;
+  fractureState: 'intact' | 'dynamic' | 'fractured';
+  id: string;
+  islandId: number;
+  mass: number;
+  material: StructuralMaterialId;
+  sleepState: 'fixed' | 'dynamic';
+  support: boolean;
+}
+
+interface StructuralBond {
+  a: string;
+  b: string;
+  broken: boolean;
+  compressionStrength: number;
+  damageCompression: number;
+  damageShear: number;
+  damageTension: number;
+  damping: number;
+  id: string;
+  kind: 'horizontal' | 'vertical' | 'corner' | 'roof-seat';
+  material: StructuralMaterialId;
+  randomness: number;
+  shearStrength: number;
+  stiffness: number;
+  tensionStrength: number;
+}
+
+interface StructuralSupportSnapshot {
+  brokenBonds: number;
+  islandCount: number;
+  nodes: number;
+  unsupportedIslands: number;
+  unsupportedNodes: Set<string>;
 }
 
 interface BridgeSupport {
@@ -105,6 +187,14 @@ interface ControlOverride {
   throttle: number;
 }
 
+interface TouchControlState {
+  forward: boolean;
+  lowerBlade: boolean;
+  raiseBlade: boolean;
+  reverse: boolean;
+  steering: number;
+}
+
 interface CameraPointerState {
   lastX: number;
   lastY: number;
@@ -123,11 +213,96 @@ interface ImpactProbe {
   probeRight: THREE.Vector3;
 }
 
+interface WallReplayFrameObject {
+  damage: number;
+  dynamic: boolean;
+  face?: HouseBlockFace;
+  id: string;
+  name: string;
+  position: [number, number, number];
+  rotation: [number, number, number, number];
+  scale: [number, number, number];
+  stage: 0 | 1 | 2;
+  visible: boolean;
+}
+
+interface WallReplaySample {
+  damage: number;
+  destroyed: boolean;
+  objects: WallReplayFrameObject[];
+  timestamp: number;
+}
+
+interface DemolitionReplayEvent {
+  face?: HouseBlockFace;
+  label: string;
+  timestamp: number;
+  type: DemolitionReplayEventType;
+  value?: number;
+}
+
+interface WallReplayTrack {
+  destroyedTime: number | null;
+  events: DemolitionReplayEvent[];
+  face: HouseBlockFace;
+  firstContactTime: number | null;
+  firstDamageTime: number | null;
+  samples: WallReplaySample[];
+}
+
+interface DemolitionReplayFrame {
+  objects: WallReplayFrameObject[];
+  step: number;
+  timestamp: number;
+}
+
+interface DemolitionReplayObject {
+  face?: HouseBlockFace;
+  firstTimestamp: number;
+  id: string;
+  lastTimestamp: number;
+  name: string;
+  proxy: THREE.Object3D;
+  source: THREE.Object3D;
+}
+
+interface DemolitionReplayRecording {
+  complete: boolean;
+  demolitionCompleteCandidateStep: number | null;
+  duration: number;
+  events: DemolitionReplayEvent[];
+  firstWallHit: number | null;
+  frames: DemolitionReplayFrame[];
+  lastSampleStep: number;
+  objects: Map<string, DemolitionReplayObject>;
+  originalGhostGroup: THREE.Group | null;
+  recording: boolean;
+  startedStep: number;
+  stoppedStep: number | null;
+  wallTracks: Map<HouseBlockFace, WallReplayTrack>;
+}
+
+interface DemolitionReplayPlayback {
+  active: boolean;
+  cameraMode: ReplayCameraMode;
+  currentTime: number;
+  focusSelectedWall: boolean;
+  isolateSelectedWall: boolean;
+  lastAppliedTime: number;
+  lastTick: number;
+  playing: boolean;
+  reverseReconstruction: boolean;
+  selectedWall: HouseBlockFace | 'all';
+  showGhostOriginal: boolean;
+  speed: number;
+}
+
 type RigidBodyDescFactory = () => RAPIER.RigidBodyDesc;
 
 const canvas = document.querySelector<HTMLCanvasElement>('#game-canvas');
 const statusReadout = document.querySelector<HTMLDivElement>('#status-readout');
 const fpsReadout = document.querySelector<HTMLSpanElement>('#fps-readout');
+const mobileControlsRoot = document.querySelector<HTMLElement>('#mobile-controls');
 
 if (!canvas || !statusReadout || !fpsReadout) {
   throw new Error('Prototype DOM is missing required elements.');
@@ -148,22 +323,23 @@ const bladeHalf = new THREE.Vector3(2.15, 0.34, 0.34).multiplyScalar(bulldozerSc
 const cabHalf = new THREE.Vector3(0.72, 0.78, 0.74).multiplyScalar(bulldozerScale);
 const cabLocalOffset = new THREE.Vector3(0, 1.35, 0.36).multiplyScalar(bulldozerScale);
 const dozerGroundY = 0.82 * bulldozerScale;
-const houseScale = 10;
-const solidWallHeight = 6.1 * houseScale;
+const houseScale = 1.25;
+const houseHeightScale = 1.65;
+const solidWallHeight = 6.1 * houseScale * houseHeightScale;
 const solidWallThickness = 1.1;
 const solidWallWidth = 14.4 * houseScale;
 const solidWallZ = 7;
 const houseDepth = 9.2 * houseScale;
 const houseCenterZ = solidWallZ - houseDepth / 2;
-const wallBlockColumns = 20;
-const wallBlockRows = 14;
-const wallSideColumns = 14;
+const wallBlockColumns = 8;
+const wallBlockRows = 8;
+const wallSideColumns = 6;
 const physicalWallRows = 4;
 const masonryBrickLength = 3;
 const masonryBrickHeight = 1.45;
-const wallBlockBreakDamage = 10;
-const wallBulgeLimit = 2.4;
-const settingsStorageKey = 'bulldozer-destruction-prototype-settings-v4';
+const defaultWallBreakDamage = 16;
+const wallBulgeLimit = 0.78;
+const settingsStorageKey = 'bulldozer-destruction-prototype-settings-v8';
 const tempQuat = new THREE.Quaternion();
 const tempVec3 = new THREE.Vector3();
 const tempVec3B = new THREE.Vector3();
@@ -178,12 +354,19 @@ const defaultSettings: SettingsValues = {
   bridgeCollapseThreshold: 4,
   columnStageOneDamage: 18,
   columnStageTwoDamage: 38,
+  criticalBearingDelayFrames: 150,
+  criticalBearingLeanSpeed: 0.14,
   debrisPickupRange: 3.2,
   destructionSpeed: 2.8,
   engineTorque: 140,
   gravity: -14.5,
   maxCarryMass: 70,
-  quality: 'Low',
+  quality: 'High',
+  roofDropSupportRatio: 0.34,
+  secondaryImpactThreshold: 42,
+  supportReleaseRatio: 0.38,
+  wallBreakDamage: defaultWallBreakDamage,
+  wallImpactDamageScale: 0.72,
 };
 
 const tuning: SettingsValues = {
@@ -194,6 +377,10 @@ const tuning: SettingsValues = {
 const draftSettings = {
   ...tuning,
   apply: () => applyDraftSettings(),
+  resetScene: () => {
+    resetPrototype();
+    focusGameCanvas();
+  },
 };
 
 const gameControlCodes = new Set([
@@ -434,6 +621,57 @@ const intactBrickMaterial = new THREE.MeshBasicMaterial({
   side: THREE.DoubleSide,
 });
 
+const materialProfiles: Record<StructuralMaterialId, MaterialProfile> = {
+  brickMasonry: {
+    compressiveLimit: 96,
+    damping: 0.74,
+    density: 1.9,
+    fractureEnergy: 28,
+    friction: 0.94,
+    minFragmentSize: 0.35,
+    restitution: 0.01,
+    shearLimit: 42,
+    stiffness: 0.82,
+    tensileLimit: 22,
+  },
+  mortarJoint: {
+    compressiveLimit: 58,
+    damping: 0.66,
+    density: 1.15,
+    fractureEnergy: 14,
+    friction: 0.88,
+    minFragmentSize: 0.18,
+    restitution: 0.005,
+    shearLimit: 24,
+    stiffness: 0.48,
+    tensileLimit: 13,
+  },
+  roofPanel: {
+    compressiveLimit: 46,
+    damping: 0.62,
+    density: 0.85,
+    fractureEnergy: 18,
+    friction: 0.72,
+    minFragmentSize: 0.65,
+    restitution: 0.02,
+    shearLimit: 20,
+    stiffness: 0.36,
+    tensileLimit: 11,
+  },
+  bulldozerSteel: {
+    compressiveLimit: 220,
+    damping: 0.9,
+    density: 7.8,
+    fractureEnergy: 180,
+    friction: 2.6,
+    minFragmentSize: 1,
+    restitution: 0.02,
+    shearLimit: 160,
+    stiffness: 1,
+    tensileLimit: 140,
+  },
+};
+
 let physicsWorld: RAPIER.World;
 let bulldozer: PhysicsEntity;
 let blade: PhysicsEntity;
@@ -446,11 +684,66 @@ let physicalFacadeRowVisuals = new Map<string, THREE.Object3D>();
 let wallBlocks: PhysicsEntity[] = [];
 let wallChunks: WallChunk[] = [];
 let fracturedWallBlockCount = 0;
+let wallFaceStress = new Map<HouseBlockFace, WallFaceStress>();
+const replayFaces: HouseBlockFace[] = ['front', 'back', 'left', 'right', 'roof-front', 'roof-back'];
+const demolitionRecorderSampleIntervalSteps = 6;
+const maxDemolitionReplayFrames = 3000;
+const replayLiveSourceVisibility = new Map<string, boolean>();
+let selectedReplayWallHelper: THREE.Box3Helper | null = null;
+let lastReplayFocusPoint = new THREE.Vector3(0, solidWallHeight * 0.45, houseCenterZ);
+let lastReplayStatsText = 'Replay: no recording yet';
+let lastReplayMarkerText = 'Markers: none';
+let demolitionReplayRecording: DemolitionReplayRecording = createEmptyDemolitionReplayRecording();
+const demolitionReplayPlayback: DemolitionReplayPlayback = {
+  active: false,
+  cameraMode: 'gameplay',
+  currentTime: 0,
+  focusSelectedWall: false,
+  isolateSelectedWall: false,
+  lastAppliedTime: -1,
+  lastTick: performance.now(),
+  playing: false,
+  reverseReconstruction: false,
+  selectedWall: 'all',
+  showGhostOriginal: false,
+  speed: 1,
+};
+const replayUiState = {
+  cameraMode: demolitionReplayPlayback.cameraMode,
+  currentTime: 0,
+  eventMarkers: lastReplayMarkerText,
+  focusSelectedWall: false,
+  hValue: 1,
+  isolateSelectedWall: false,
+  pause: () => pauseDemolitionReplay(),
+  play: () => playDemolitionReplay(),
+  reverseReconstruction: false,
+  selectedWall: 'all' as HouseBlockFace | 'all',
+  showGhostOriginal: false,
+  stats: lastReplayStatsText,
+  stepBack: () => stepDemolitionReplay(-1),
+  stepForward: () => stepDemolitionReplay(1),
+  stop: () => stopDemolitionReplayPlayback(),
+};
+let replayScrubController: ReturnType<GUI['add']> | null = null;
+let replayUiControllers: Array<ReturnType<GUI['add']>> = [];
+let structuralNodes = new Map<string, StructuralNode>();
+let structuralBonds: StructuralBond[] = [];
+let structuralDirty = true;
+let lastStructuralStats: StructuralSupportSnapshot = {
+  brokenBonds: 0,
+  islandCount: 0,
+  nodes: 0,
+  unsupportedIslands: 0,
+  unsupportedNodes: new Set<string>(),
+};
 let keys = new Set<string>();
 let controlOverride: ControlOverride | null = null;
+let touchControlOverride: ControlOverride | null = null;
 let cameraPointer: CameraPointerState | null = null;
 let dozerSpeed = 0;
 let dozerYaw = 0;
+let dozerTurnSpeed = 0;
 let cameraYaw = 0;
 let cameraPitch = 0.48;
 let cameraDistance = 64;
@@ -469,18 +762,23 @@ let lastDebugSupportSampleStep = -20;
 let cachedAirborneDynamicDebris = 0;
 let lastStaticVisualSupportSampleStep = -20;
 let cachedUnsupportedStaticVisualBlocks = 0;
-const maxLiveDynamicDebris = 150;
-const dynamicDebrisMinAgeSteps = 35;
-const dynamicDebrisSettleSteps = 8;
-const debrisSettleDistanceFromDozer = 5.5;
+const maxLiveDynamicDebris = 36;
+const dynamicDebrisMinAgeSteps = 36;
+const dynamicDebrisSettleSteps = 14;
+const debrisSettleDistanceFromDozer = 4.4;
 const debrisReactivationDistance = 8.5;
 const secondaryWallImpactCooldownSteps = 14;
-const secondaryWallImpactForceThreshold = 26;
 const maxVisualWallImpactsPerMover = 2;
-const maxStructuralVisualReleasesPerStep = 8;
-const houseUpperFacadeReleaseSupportRatio = 0.42;
-const houseRoofCollapseSupportRatio = 0.36;
+const maxStructuralVisualReleasesPerStep = 1;
+const maxUnsupportedWallBlockReleasesPerStep = 6;
 const debugSupportSampleInterval = 20;
+const touchControlState: TouchControlState = {
+  forward: false,
+  lowerBlade: false,
+  raiseBlade: false,
+  reverse: false,
+  steering: 0,
+};
 
 function getPixelRatioForQuality(quality: QualityLevel): number {
   const dpr = window.devicePixelRatio || 1;
@@ -509,6 +807,12 @@ function sanitizeSettings(raw: Partial<SettingsValues>): Partial<SettingsValues>
   if (typeof raw.bridgeCollapseThreshold === 'number' && Number.isFinite(raw.bridgeCollapseThreshold)) {
     sanitized.bridgeCollapseThreshold = Math.round(THREE.MathUtils.clamp(raw.bridgeCollapseThreshold, 1, 8));
   }
+  if (typeof raw.criticalBearingDelayFrames === 'number' && Number.isFinite(raw.criticalBearingDelayFrames)) {
+    sanitized.criticalBearingDelayFrames = Math.round(THREE.MathUtils.clamp(raw.criticalBearingDelayFrames, 30, 300));
+  }
+  if (typeof raw.criticalBearingLeanSpeed === 'number' && Number.isFinite(raw.criticalBearingLeanSpeed)) {
+    sanitized.criticalBearingLeanSpeed = THREE.MathUtils.clamp(raw.criticalBearingLeanSpeed, 0.05, 1.45);
+  }
   if (typeof raw.debrisPickupRange === 'number' && Number.isFinite(raw.debrisPickupRange)) {
     sanitized.debrisPickupRange = THREE.MathUtils.clamp(raw.debrisPickupRange, 1.2, 5.5);
   }
@@ -518,11 +822,23 @@ function sanitizeSettings(raw: Partial<SettingsValues>): Partial<SettingsValues>
   if (typeof raw.maxCarryMass === 'number' && Number.isFinite(raw.maxCarryMass)) {
     sanitized.maxCarryMass = THREE.MathUtils.clamp(raw.maxCarryMass, 20, 140);
   }
-  if (raw.quality === 'Low' || raw.quality === 'Medium' || raw.quality === 'High') {
-    sanitized.quality = raw.quality;
+  if (typeof raw.wallBreakDamage === 'number' && Number.isFinite(raw.wallBreakDamage)) {
+    sanitized.wallBreakDamage = THREE.MathUtils.clamp(raw.wallBreakDamage, 8, 36);
   }
-
+  if (typeof raw.wallImpactDamageScale === 'number' && Number.isFinite(raw.wallImpactDamageScale)) {
+    sanitized.wallImpactDamageScale = THREE.MathUtils.clamp(raw.wallImpactDamageScale, 0.35, 1.4);
+  }
+  if (typeof raw.secondaryImpactThreshold === 'number' && Number.isFinite(raw.secondaryImpactThreshold)) {
+    sanitized.secondaryImpactThreshold = THREE.MathUtils.clamp(raw.secondaryImpactThreshold, 18, 80);
+  }
+  if (typeof raw.supportReleaseRatio === 'number' && Number.isFinite(raw.supportReleaseRatio)) {
+    sanitized.supportReleaseRatio = THREE.MathUtils.clamp(raw.supportReleaseRatio, 0.18, 0.75);
+  }
+  if (typeof raw.roofDropSupportRatio === 'number' && Number.isFinite(raw.roofDropSupportRatio)) {
+    sanitized.roofDropSupportRatio = THREE.MathUtils.clamp(raw.roofDropSupportRatio, 0.12, 0.7);
+  }
   sanitized.gravity = defaultSettings.gravity;
+  sanitized.quality = 'High';
   return sanitized;
 }
 
@@ -559,6 +875,7 @@ function focusGameCanvas(): void {
 
 function applyDraftSettings(): void {
   Object.assign(tuning, defaultSettings, sanitizeSettings(draftSettings));
+  tuning.quality = 'High';
   Object.assign(draftSettings, tuning);
   saveSettings();
   applyQualitySettings();
@@ -569,12 +886,67 @@ function getDestructionSpeed(): number {
   return THREE.MathUtils.clamp(tuning.destructionSpeed, 0.5, 3.5);
 }
 
+function getWallBreakDamage(): number {
+  return THREE.MathUtils.clamp(tuning.wallBreakDamage, 8, 36);
+}
+
+function getWallImpactDamageScale(): number {
+  return THREE.MathUtils.clamp(tuning.wallImpactDamageScale, 0.35, 1.4);
+}
+
+function getSecondaryImpactThreshold(): number {
+  return THREE.MathUtils.clamp(tuning.secondaryImpactThreshold, 18, 80);
+}
+
+function getSupportReleaseRatio(): number {
+  return THREE.MathUtils.clamp(tuning.supportReleaseRatio, 0.18, 0.75);
+}
+
+function getRoofDropSupportRatio(): number {
+  return THREE.MathUtils.clamp(tuning.roofDropSupportRatio, 0.12, 0.7);
+}
+
+function getCriticalBearingDelayFrames(): number {
+  return Math.round(THREE.MathUtils.clamp(tuning.criticalBearingDelayFrames, 30, 300));
+}
+
+function getCriticalBearingLeanSpeed(): number {
+  return THREE.MathUtils.clamp(tuning.criticalBearingLeanSpeed, 0.05, 1.45);
+}
+
+function updateTouchControlOverride(): void {
+  const throttle = (touchControlState.forward ? 1 : 0) - (touchControlState.reverse ? 1 : 0);
+  const steering = touchControlState.steering;
+
+  if (
+    throttle === 0 &&
+    steering === 0 &&
+    !touchControlState.lowerBlade &&
+    !touchControlState.raiseBlade
+  ) {
+    touchControlOverride = null;
+    return;
+  }
+
+  touchControlOverride = {
+    lowerBlade: touchControlState.lowerBlade,
+    lowGear: true,
+    raiseBlade: touchControlState.raiseBlade,
+    steering,
+    throttle,
+  };
+}
+
 function syncMeshFromBody(entity: PhysicsEntity): void {
   const position = entity.body.translation();
   const rotation = entity.body.rotation();
 
   entity.mesh.position.set(position.x, position.y, position.z);
   entity.mesh.quaternion.set(rotation.x, rotation.y, rotation.z, rotation.w);
+
+  if (entity.wallBlock && !isRoofFace(entity.wallBlock.face) && entity.stage < 2 && !entity.body.isDynamic()) {
+    applyWallBlockVisualDeformation(entity);
+  }
 }
 
 function getBodyForward(body: RAPIER.RigidBody, target = tempForward): THREE.Vector3 {
@@ -654,6 +1026,80 @@ function createBoxMesh(halfExtents: THREE.Vector3, material: THREE.Material): TH
 
 function getBrickSurfaceSign(face?: HouseBlockFace | 'fragment'): number {
   return face === 'back' || face === 'left' ? -1 : 1;
+}
+
+function collectWorldBrickGridCells(
+  halfExtents: THREE.Vector3,
+  worldPosition: THREE.Vector3,
+): {
+  column: number;
+  localLengthCenter: number;
+  localY: number;
+  row: number;
+  scale: THREE.Vector3;
+}[] {
+  const lengthAxis: 'x' | 'z' = halfExtents.x >= halfExtents.z ? 'x' : 'z';
+  const length = halfExtents[lengthAxis] * 2;
+  const height = halfExtents.y * 2;
+  const depth = (lengthAxis === 'x' ? halfExtents.z : halfExtents.x) * 2;
+  const columns = Math.max(2, Math.min(8, Math.round(length / masonryBrickLength)));
+  const rows = Math.max(2, Math.min(6, Math.round(height / masonryBrickHeight)));
+  const mortarGap = Math.min(0.28, Math.max(0.12, Math.min(length / columns, height / rows) * 0.09));
+  const cellLength = masonryBrickLength;
+  const cellHeight = masonryBrickHeight;
+  const brickDepth = Math.min(0.9, Math.max(0.45, depth * 0.46));
+  const worldLengthCenter = lengthAxis === 'x' ? worldPosition.x : worldPosition.z;
+  const worldLengthMin = worldLengthCenter - length * 0.5;
+  const worldLengthMax = worldLengthCenter + length * 0.5;
+  const worldYMin = worldPosition.y - height * 0.5;
+  const worldYMax = worldPosition.y + height * 0.5;
+  const firstRow = Math.floor(worldYMin / cellHeight) - 1;
+  const lastRow = Math.ceil(worldYMax / cellHeight) + 1;
+  const cells: {
+    column: number;
+    localLengthCenter: number;
+    localY: number;
+    row: number;
+    scale: THREE.Vector3;
+  }[] = [];
+
+  for (let row = firstRow; row <= lastRow; row += 1) {
+    const rowOffset = row % 2 === 0 ? 0 : cellLength * 0.5;
+    const brickYMin = row * cellHeight + mortarGap * 0.5;
+    const brickYMax = (row + 1) * cellHeight - mortarGap * 0.5;
+    const clippedYMin = Math.max(brickYMin, worldYMin);
+    const clippedYMax = Math.min(brickYMax, worldYMax);
+
+    if (clippedYMax - clippedYMin < 0.08) {
+      continue;
+    }
+
+    const firstColumn = Math.floor((worldLengthMin - rowOffset) / cellLength) - 1;
+    const lastColumn = Math.ceil((worldLengthMax - rowOffset) / cellLength) + 1;
+
+    for (let column = firstColumn; column <= lastColumn; column += 1) {
+      const brickLengthMin = column * cellLength + rowOffset + mortarGap * 0.5;
+      const brickLengthMax = (column + 1) * cellLength + rowOffset - mortarGap * 0.5;
+      const clippedLengthMin = Math.max(brickLengthMin, worldLengthMin);
+      const clippedLengthMax = Math.min(brickLengthMax, worldLengthMax);
+
+      if (clippedLengthMax - clippedLengthMin < 0.12) {
+        continue;
+      }
+
+      const brickLength = clippedLengthMax - clippedLengthMin;
+      const brickHeight = clippedYMax - clippedYMin;
+      const localLengthCenter = (clippedLengthMin + clippedLengthMax) * 0.5 - worldLengthCenter;
+      const localY = (clippedYMin + clippedYMax) * 0.5 - worldPosition.y;
+      const scale = lengthAxis === 'x'
+        ? new THREE.Vector3(brickLength, brickHeight, brickDepth)
+        : new THREE.Vector3(brickDepth, brickHeight, brickLength);
+
+      cells.push({ column, localLengthCenter, localY, row, scale });
+    }
+  }
+
+  return cells;
 }
 
 function createIntactBrickWallVisual(
@@ -821,73 +1267,6 @@ function createIntactBrickWallVisual(
   return group;
 }
 
-function createStaticWallVisual(
-  name: string,
-  halfExtents: THREE.Vector3,
-  position: THREE.Vector3,
-  material: THREE.Material,
-  wallInfo?: Omit<StaticWallVisualInfo, 'halfExtents'>,
-): THREE.Object3D {
-  const mesh = wallInfo && !isRoofFace(wallInfo.face)
-    ? createIntactBrickWallVisual(
-      halfExtents,
-      wallInfo.row * 7919 + wallInfo.column * 104729 + hashStringSeed(wallInfo.face),
-      {
-        brickHeight: masonryBrickHeight,
-        brickLength: masonryBrickLength,
-        castShadow: false,
-        face: wallInfo.face,
-        maxColumns: wallInfo.face === 'front' || wallInfo.face === 'back' ? 128 : 96,
-        maxRows: 6,
-        worldPosition: position,
-      },
-    )
-    : createBoxMesh(halfExtents, material);
-
-  if (wallInfo) {
-    disposeGeneratedMaterial(material);
-  }
-
-  mesh.name = name;
-  mesh.position.copy(position);
-  if (wallInfo) {
-    mesh.userData.staticWallVisual = {
-      ...wallInfo,
-      halfExtents: halfExtents.clone(),
-    } satisfies StaticWallVisualInfo;
-  }
-  scene.add(mesh);
-  staticWallVisuals.push(mesh);
-  return mesh;
-}
-
-function createStaticHouseRowVisual(
-  face: HouseBlockFace,
-  row: number,
-  halfExtents: THREE.Vector3,
-  position: THREE.Vector3,
-): THREE.Object3D {
-  return createStaticWallVisual(
-    `house-${face}-visual-row-${row}`,
-    halfExtents,
-    position,
-    createBrickMaterialForBox(halfExtents, face, position, row),
-    { column: -1, face, row },
-  );
-}
-
-function createPhysicalFacadeRowVisual(
-  face: HouseBlockFace,
-  row: number,
-  halfExtents: THREE.Vector3,
-  position: THREE.Vector3,
-): void {
-  const facade = createStaticHouseRowVisual(face, row, halfExtents, position);
-  facade.name = `house-${face}-physical-facade-row-${row}`;
-  facade.userData.physicalFacadeRowVisual = true;
-  physicalFacadeRowVisuals.set(getPhysicalFacadeRowKey(face, row), facade);
-}
-
 function disposeObjectGeometry(object: THREE.Object3D): void {
   object.traverse((child) => {
     if (child instanceof THREE.Mesh) {
@@ -1045,6 +1424,7 @@ function clearPrototype(): void {
     disposeObjectGeometry(object);
   });
   staticWallVisuals = [];
+  clearStructuralGraph();
   physicalFacadeRowVisuals.clear();
   entities.forEach((entity) => {
     scene.remove(entity.mesh);
@@ -1056,6 +1436,696 @@ function clearPrototype(): void {
   fracturedWallBlockCount = 0;
   bridgeDecks = [];
   bridgeSupports = [];
+}
+
+function createWallReplayTracks(): Map<HouseBlockFace, WallReplayTrack> {
+  return new Map(
+    replayFaces.map((face) => [
+      face,
+      {
+        destroyedTime: null,
+        events: [],
+        face,
+        firstContactTime: null,
+        firstDamageTime: null,
+        samples: [],
+      },
+    ]),
+  );
+}
+
+function createEmptyDemolitionReplayRecording(): DemolitionReplayRecording {
+  return {
+    complete: false,
+    demolitionCompleteCandidateStep: null,
+    duration: 0,
+    events: [],
+    firstWallHit: null,
+    frames: [],
+    lastSampleStep: -999,
+    objects: new Map(),
+    originalGhostGroup: null,
+    recording: false,
+    startedStep: 0,
+    stoppedStep: null,
+    wallTracks: createWallReplayTracks(),
+  };
+}
+
+function disposeReplayProxyObject(object: THREE.Object3D): void {
+  scene.remove(object);
+  disposeObjectGeometry(object);
+}
+
+function resetDemolitionReplaySystem(): void {
+  stopDemolitionReplayPlayback(false);
+  demolitionReplayRecording.objects.forEach((object) => disposeReplayProxyObject(object.proxy));
+  demolitionReplayRecording.originalGhostGroup?.children.forEach((child) => disposeObjectGeometry(child));
+  if (demolitionReplayRecording.originalGhostGroup) {
+    scene.remove(demolitionReplayRecording.originalGhostGroup);
+  }
+  demolitionReplayRecording = createEmptyDemolitionReplayRecording();
+  replayLiveSourceVisibility.clear();
+  lastReplayFocusPoint.set(0, solidWallHeight * 0.45, houseCenterZ);
+  lastReplayStatsText = 'Replay: no recording yet';
+  lastReplayMarkerText = 'Markers: none';
+  updateReplayUiReadouts();
+}
+
+function cloneMaterialForReplay(material: THREE.Material | THREE.Material[]): THREE.Material | THREE.Material[] {
+  if (Array.isArray(material)) {
+    return material.map((entry) => entry.clone());
+  }
+  return material.clone();
+}
+
+function cloneObjectForReplay(source: THREE.Object3D): THREE.Object3D {
+  const clone = source.clone(true);
+
+  clone.traverse((object) => {
+    if (object instanceof THREE.Mesh) {
+      object.geometry = object.geometry.clone();
+      object.material = cloneMaterialForReplay(object.material);
+      object.castShadow = false;
+      object.receiveShadow = true;
+    }
+    object.userData = { ...object.userData, replayProxy: true };
+  });
+  clone.visible = false;
+  clone.matrixAutoUpdate = true;
+  scene.add(clone);
+  return clone;
+}
+
+function createOriginalGhostGroup(): THREE.Group {
+  const group = new THREE.Group();
+
+  group.name = 'replay-original-structure-ghost';
+  for (const block of wallBlocks) {
+    if (!block.wallBlock) {
+      continue;
+    }
+    const ghost = cloneObjectForReplay(block.mesh);
+
+    scene.remove(ghost);
+    ghost.visible = true;
+    ghost.traverse((object) => {
+      if (object instanceof THREE.Mesh) {
+        const materialsToGhost = Array.isArray(object.material) ? object.material : [object.material];
+
+        materialsToGhost.forEach((material) => {
+          material.transparent = true;
+          material.opacity = isRoofFace(block.wallBlock?.face ?? 'front') ? 0.2 : 0.16;
+          material.depthWrite = false;
+        });
+      }
+    });
+    group.add(ghost);
+  }
+  group.visible = false;
+  scene.add(group);
+  return group;
+}
+
+function getReplayFaceFromObject(object: THREE.Object3D): HouseBlockFace | undefined {
+  const replayFace = object.userData.replayFace;
+  const structuralFace = object.userData.structuralCollapseFace;
+
+  if (replayFaces.includes(replayFace)) {
+    return replayFace;
+  }
+  if (replayFaces.includes(structuralFace)) {
+    return structuralFace;
+  }
+  if (object.userData.roofCollapseDebris && object.name.includes('roof-back')) {
+    return 'roof-back';
+  }
+  if (object.userData.roofCollapseDebris && object.name.includes('roof-front')) {
+    return 'roof-front';
+  }
+  return undefined;
+}
+
+function getReplayFaceForEntity(entity: PhysicsEntity): HouseBlockFace | undefined {
+  return entity.wallBlock?.face ?? getReplayFaceFromObject(entity.mesh);
+}
+
+function isReplayRelevantEntity(entity: PhysicsEntity): boolean {
+  return entity === bulldozer || entity === blade || Boolean(getReplayFaceForEntity(entity));
+}
+
+function captureReplayObjectFrame(entity: PhysicsEntity): WallReplayFrameObject {
+  const face = getReplayFaceForEntity(entity);
+  const position = entity.body.translation();
+  const rotation = entity.body.rotation();
+
+  return {
+    damage: Number(entity.damage.toFixed(3)),
+    dynamic: entity.body.isDynamic(),
+    face,
+    id: entity.mesh.uuid,
+    name: entity.name,
+    position: [position.x, position.y, position.z],
+    rotation: [rotation.x, rotation.y, rotation.z, rotation.w],
+    scale: [entity.mesh.scale.x, entity.mesh.scale.y, entity.mesh.scale.z],
+    stage: entity.stage,
+    visible: entity.mesh.visible,
+  };
+}
+
+function captureReplayVisualFrame(object: THREE.Object3D): WallReplayFrameObject | null {
+  const face = getReplayFaceFromObject(object);
+
+  if (!face) {
+    return null;
+  }
+
+  return {
+    damage: 0,
+    dynamic: false,
+    face,
+    id: object.uuid,
+    name: object.name || 'settled-wall-visual',
+    position: [object.position.x, object.position.y, object.position.z],
+    rotation: [object.quaternion.x, object.quaternion.y, object.quaternion.z, object.quaternion.w],
+    scale: [object.scale.x, object.scale.y, object.scale.z],
+    stage: 2,
+    visible: object.visible,
+  };
+}
+
+function ensureDemolitionReplayObject(source: THREE.Object3D, face: HouseBlockFace | undefined, timestamp: number, name: string): void {
+  const existing = demolitionReplayRecording.objects.get(source.uuid);
+
+  if (existing) {
+    existing.face = existing.face ?? face;
+    existing.lastTimestamp = timestamp;
+    return;
+  }
+
+  demolitionReplayRecording.objects.set(source.uuid, {
+    face,
+    firstTimestamp: timestamp,
+    id: source.uuid,
+    lastTimestamp: timestamp,
+    name,
+    proxy: cloneObjectForReplay(source),
+    source,
+  });
+}
+
+function getDemolitionReplayTimestamp(): number {
+  if (!demolitionReplayRecording.recording && !demolitionReplayRecording.complete) {
+    return 0;
+  }
+  return Math.max(0, (simulationStep - demolitionReplayRecording.startedStep) * fixedDt);
+}
+
+function startDemolitionRecording(face?: HouseBlockFace, force = 0): void {
+  if (demolitionReplayRecording.recording || demolitionReplayRecording.complete) {
+    return;
+  }
+
+  demolitionReplayRecording.recording = true;
+  demolitionReplayRecording.startedStep = simulationStep;
+  demolitionReplayRecording.firstWallHit = 0;
+  demolitionReplayRecording.originalGhostGroup = createOriginalGhostGroup();
+  addDemolitionReplayEvent('first-contact', 'first bulldozer contact', face, force);
+  captureDemolitionReplayFrame(true);
+}
+
+function addDemolitionReplayEvent(
+  type: DemolitionReplayEventType,
+  label: string,
+  face?: HouseBlockFace,
+  value?: number,
+): void {
+  if (!demolitionReplayRecording.recording && !demolitionReplayRecording.complete) {
+    return;
+  }
+
+  const timestamp = getDemolitionReplayTimestamp();
+  const duplicate = demolitionReplayRecording.events.some((event) => (
+    event.type === type &&
+    event.face === face &&
+    Math.abs(event.timestamp - timestamp) < fixedDt * 2
+  ));
+
+  if (duplicate) {
+    return;
+  }
+
+  const event: DemolitionReplayEvent = {
+    face,
+    label,
+    timestamp,
+    type,
+    value,
+  };
+
+  demolitionReplayRecording.events.push(event);
+  if (face) {
+    const track = demolitionReplayRecording.wallTracks.get(face);
+
+    track?.events.push(event);
+    if (type === 'first-contact' && track && track.firstContactTime === null) {
+      track.firstContactTime = timestamp;
+    }
+    if (type === 'wall-damaged' && track && track.firstDamageTime === null) {
+      track.firstDamageTime = timestamp;
+    }
+    if ((type === 'wall-destroyed' || type === 'wall-detached') && track && track.destroyedTime === null) {
+      track.destroyedTime = timestamp;
+    }
+  }
+}
+
+function registerBulldozerWallReplayContact(entity: PhysicsEntity, force: number): void {
+  const face = getReplayFaceForEntity(entity);
+
+  if (!face || isRoofFace(face)) {
+    return;
+  }
+  startDemolitionRecording(face, force);
+  addDemolitionReplayEvent('first-contact', `${face} first contact`, face, force);
+}
+
+function registerWallReplayDamage(entity: PhysicsEntity, previousDamage: number, effectiveAmount: number): void {
+  const face = getReplayFaceForEntity(entity);
+
+  if (!face || !demolitionReplayRecording.recording) {
+    return;
+  }
+  if (previousDamage <= 0 && entity.damage > 0) {
+    addDemolitionReplayEvent('wall-damaged', `${face} damaged`, face, effectiveAmount);
+  }
+  if (previousDamage < getWallBreakDamage() * 0.5 && entity.damage >= getWallBreakDamage() * 0.5) {
+    addDemolitionReplayEvent('wall-cracked', `${face} cracked`, face, entity.damage);
+  }
+}
+
+function captureDemolitionReplayFrame(force = false): void {
+  if (!demolitionReplayRecording.recording) {
+    return;
+  }
+  if (!force && simulationStep - demolitionReplayRecording.lastSampleStep < demolitionRecorderSampleIntervalSteps) {
+    return;
+  }
+  if (demolitionReplayRecording.frames.length >= maxDemolitionReplayFrames) {
+    finishDemolitionRecording('frame budget reached');
+    return;
+  }
+
+  const timestamp = getDemolitionReplayTimestamp();
+  const objects: WallReplayFrameObject[] = [];
+
+  for (const entity of entities) {
+    if (!isReplayRelevantEntity(entity)) {
+      continue;
+    }
+    const frame = captureReplayObjectFrame(entity);
+
+    ensureDemolitionReplayObject(entity.mesh, frame.face, timestamp, entity.name);
+    objects.push(frame);
+  }
+
+  for (const object of [...settledDebrisVisuals, ...staticWallVisuals]) {
+    const frame = captureReplayVisualFrame(object);
+
+    if (!frame) {
+      continue;
+    }
+    ensureDemolitionReplayObject(object, frame.face, timestamp, frame.name);
+    objects.push(frame);
+  }
+
+  demolitionReplayRecording.frames.push({ objects, step: simulationStep, timestamp });
+  demolitionReplayRecording.duration = timestamp;
+  demolitionReplayRecording.lastSampleStep = simulationStep;
+
+  for (const face of replayFaces) {
+    const faceObjects = objects.filter((object) => object.face === face);
+    const track = demolitionReplayRecording.wallTracks.get(face);
+
+    if (!track || faceObjects.length === 0) {
+      continue;
+    }
+
+    track.samples.push({
+      damage: faceObjects.reduce((total, object) => total + object.damage, 0),
+      destroyed: !wallBlocks.some((block) => block.wallBlock?.face === face),
+      objects: faceObjects,
+      timestamp,
+    });
+  }
+}
+
+function getAttachedStructureBlockCount(): number {
+  return wallBlocks.filter((block) => Boolean(block.wallBlock)).length;
+}
+
+function updateDemolitionRecorder(): void {
+  if (!demolitionReplayRecording.recording) {
+    return;
+  }
+
+  captureDemolitionReplayFrame();
+
+  if (getAttachedStructureBlockCount() > 0) {
+    demolitionReplayRecording.demolitionCompleteCandidateStep = null;
+    return;
+  }
+
+  if (demolitionReplayRecording.demolitionCompleteCandidateStep === null) {
+    demolitionReplayRecording.demolitionCompleteCandidateStep = simulationStep;
+    addDemolitionReplayEvent('full-demolition', 'full structure demolished');
+    return;
+  }
+
+  if (simulationStep - demolitionReplayRecording.demolitionCompleteCandidateStep >= 90) {
+    finishDemolitionRecording('structure demolished');
+  }
+}
+
+function finishDemolitionRecording(_reason: string): void {
+  if (!demolitionReplayRecording.recording) {
+    return;
+  }
+
+  captureDemolitionReplayFrame(true);
+  demolitionReplayRecording.recording = false;
+  demolitionReplayRecording.complete = true;
+  demolitionReplayRecording.stoppedStep = simulationStep;
+  demolitionReplayRecording.duration = demolitionReplayRecording.frames.at(-1)?.timestamp ?? 0;
+  updateReplayUiReadouts();
+
+  if (debugGui) {
+    debugGui.domElement.style.display = '';
+  }
+}
+
+function setReplayLiveSourcesVisible(visible: boolean): void {
+  const liveObjects = [
+    ...entities.map((entity) => entity.mesh),
+    ...settledDebrisVisuals,
+    ...staticWallVisuals,
+  ];
+
+  if (!visible) {
+    for (const object of liveObjects) {
+      if (!replayLiveSourceVisibility.has(object.uuid)) {
+        replayLiveSourceVisibility.set(object.uuid, object.visible);
+      }
+      if (isReplayLiveObject(object)) {
+        object.visible = false;
+      }
+    }
+    return;
+  }
+
+  for (const object of liveObjects) {
+    const original = replayLiveSourceVisibility.get(object.uuid);
+
+    if (typeof original === 'boolean') {
+      object.visible = original;
+    }
+  }
+  replayLiveSourceVisibility.clear();
+}
+
+function isReplayLiveObject(object: THREE.Object3D): boolean {
+  if (object === bulldozer?.mesh || object === blade?.mesh) {
+    return true;
+  }
+  return Boolean(getReplayFaceFromObject(object));
+}
+
+function getReplayDisplayTime(): number {
+  return demolitionReplayPlayback.reverseReconstruction
+    ? Math.max(0, demolitionReplayRecording.duration - demolitionReplayPlayback.currentTime)
+    : demolitionReplayPlayback.currentTime;
+}
+
+function getFrameObjectMap(frame: DemolitionReplayFrame | undefined): Map<string, WallReplayFrameObject> {
+  const map = new Map<string, WallReplayFrameObject>();
+
+  frame?.objects.forEach((object) => map.set(object.id, object));
+  return map;
+}
+
+function interpolateReplayObject(
+  previous: WallReplayFrameObject | undefined,
+  next: WallReplayFrameObject | undefined,
+  amount: number,
+): WallReplayFrameObject | null {
+  const source = previous ?? next;
+
+  if (!source) {
+    return null;
+  }
+  if (!previous || !next) {
+    return source;
+  }
+
+  const position = new THREE.Vector3(...previous.position).lerp(new THREE.Vector3(...next.position), amount);
+  const rotation = new THREE.Quaternion(...previous.rotation).slerp(new THREE.Quaternion(...next.rotation), amount);
+  const scale = new THREE.Vector3(...previous.scale).lerp(new THREE.Vector3(...next.scale), amount);
+
+  return {
+    ...source,
+    damage: THREE.MathUtils.lerp(previous.damage, next.damage, amount),
+    dynamic: previous.dynamic || next.dynamic,
+    position: [position.x, position.y, position.z],
+    rotation: [rotation.x, rotation.y, rotation.z, rotation.w],
+    scale: [scale.x, scale.y, scale.z],
+    stage: amount < 0.5 ? previous.stage : next.stage,
+    visible: previous.visible || next.visible,
+  };
+}
+
+function findReplayFramePair(timestamp: number): { amount: number; next?: DemolitionReplayFrame; previous?: DemolitionReplayFrame } {
+  const frames = demolitionReplayRecording.frames;
+
+  if (frames.length === 0) {
+    return { amount: 0 };
+  }
+  const firstFrame = frames[0];
+  const lastFrame = frames[frames.length - 1];
+
+  if (!firstFrame || !lastFrame) {
+    return { amount: 0 };
+  }
+  if (timestamp <= firstFrame.timestamp) {
+    return { amount: 0, next: firstFrame, previous: firstFrame };
+  }
+  if (timestamp >= lastFrame.timestamp) {
+    return { amount: 0, next: lastFrame, previous: lastFrame };
+  }
+
+  for (let index = 1; index < frames.length; index += 1) {
+    const next = frames[index];
+    const previous = frames[index - 1];
+
+    if (next && previous && next.timestamp >= timestamp) {
+      const duration = Math.max(fixedDt, next.timestamp - previous.timestamp);
+      return {
+        amount: THREE.MathUtils.clamp((timestamp - previous.timestamp) / duration, 0, 1),
+        next,
+        previous,
+      };
+    }
+  }
+
+  return { amount: 0, next: lastFrame, previous: lastFrame };
+}
+
+function applyDemolitionReplayTime(timestamp: number): void {
+  if (demolitionReplayRecording.frames.length === 0) {
+    return;
+  }
+
+  const displayTime = THREE.MathUtils.clamp(timestamp, 0, demolitionReplayRecording.duration);
+  const { amount, next, previous } = findReplayFramePair(displayTime);
+  const previousObjects = getFrameObjectMap(previous);
+  const nextObjects = getFrameObjectMap(next);
+  const objectIds = new Set([...previousObjects.keys(), ...nextObjects.keys()]);
+  const selected = demolitionReplayPlayback.selectedWall;
+  const isolateFace = demolitionReplayPlayback.isolateSelectedWall && selected !== 'all' ? selected : null;
+  const focusBox = new THREE.Box3();
+  let hasFocusBox = false;
+
+  demolitionReplayRecording.objects.forEach((object) => {
+    object.proxy.visible = false;
+  });
+
+  for (const id of objectIds) {
+    const replayObject = demolitionReplayRecording.objects.get(id);
+    const sample = interpolateReplayObject(previousObjects.get(id), nextObjects.get(id), amount);
+
+    if (!replayObject || !sample || displayTime < replayObject.firstTimestamp - fixedDt || displayTime > replayObject.lastTimestamp + fixedDt * 2) {
+      continue;
+    }
+    if (isolateFace && sample.face !== isolateFace && sample.name !== bulldozer?.name && sample.name !== blade?.name) {
+      continue;
+    }
+
+    replayObject.proxy.position.set(...sample.position);
+    replayObject.proxy.quaternion.set(...sample.rotation);
+    replayObject.proxy.scale.set(...sample.scale);
+    replayObject.proxy.visible = sample.visible;
+
+    if (selected !== 'all' && sample.face === selected && sample.visible) {
+      focusBox.expandByObject(replayObject.proxy);
+      hasFocusBox = true;
+    }
+  }
+
+  if (demolitionReplayRecording.originalGhostGroup) {
+    demolitionReplayRecording.originalGhostGroup.visible = demolitionReplayPlayback.showGhostOriginal;
+  }
+  updateSelectedReplayWallHelper(hasFocusBox ? focusBox : null);
+  if (hasFocusBox) {
+    focusBox.getCenter(lastReplayFocusPoint);
+  } else {
+    const dozerProxy = Array.from(demolitionReplayRecording.objects.values()).find((object) => object.name === bulldozer?.name);
+
+    if (dozerProxy?.proxy.visible) {
+      lastReplayFocusPoint.copy(dozerProxy.proxy.position);
+    }
+  }
+  demolitionReplayPlayback.lastAppliedTime = displayTime;
+  updateReplayUiReadouts();
+}
+
+function updateSelectedReplayWallHelper(box: THREE.Box3 | null): void {
+  if (!box) {
+    if (selectedReplayWallHelper) {
+      selectedReplayWallHelper.visible = false;
+    }
+    return;
+  }
+
+  if (!selectedReplayWallHelper) {
+    selectedReplayWallHelper = new THREE.Box3Helper(box.clone(), new THREE.Color(0xf8d24b));
+    scene.add(selectedReplayWallHelper);
+  } else {
+    selectedReplayWallHelper.box.copy(box);
+  }
+  selectedReplayWallHelper.visible = demolitionReplayPlayback.selectedWall !== 'all';
+}
+
+function playDemolitionReplay(): void {
+  if (!demolitionReplayRecording.complete || demolitionReplayRecording.frames.length === 0) {
+    return;
+  }
+  demolitionReplayPlayback.active = true;
+  demolitionReplayPlayback.playing = true;
+  demolitionReplayPlayback.lastTick = performance.now();
+  setReplayLiveSourcesVisible(false);
+  applyDemolitionReplayTime(getReplayDisplayTime());
+}
+
+function pauseDemolitionReplay(): void {
+  demolitionReplayPlayback.playing = false;
+}
+
+function stopDemolitionReplayPlayback(restoreLive = true): void {
+  demolitionReplayPlayback.active = false;
+  demolitionReplayPlayback.playing = false;
+  demolitionReplayPlayback.currentTime = 0;
+  demolitionReplayPlayback.lastAppliedTime = -1;
+  demolitionReplayRecording.objects.forEach((object) => {
+    object.proxy.visible = false;
+  });
+  if (demolitionReplayRecording.originalGhostGroup) {
+    demolitionReplayRecording.originalGhostGroup.visible = false;
+  }
+  updateSelectedReplayWallHelper(null);
+  if (restoreLive) {
+    setReplayLiveSourcesVisible(true);
+  }
+  updateReplayUiReadouts();
+}
+
+function stepDemolitionReplay(direction: -1 | 1): void {
+  if (!demolitionReplayRecording.complete) {
+    return;
+  }
+  demolitionReplayPlayback.active = true;
+  demolitionReplayPlayback.playing = false;
+  setReplayLiveSourcesVisible(false);
+  demolitionReplayPlayback.currentTime = THREE.MathUtils.clamp(
+    demolitionReplayPlayback.currentTime + direction * Math.max(fixedDt, demolitionRecorderSampleIntervalSteps * fixedDt),
+    0,
+    demolitionReplayRecording.duration,
+  );
+  applyDemolitionReplayTime(getReplayDisplayTime());
+}
+
+function updateDemolitionReplayPlayback(): void {
+  if (!demolitionReplayPlayback.active) {
+    return;
+  }
+
+  const now = performance.now();
+  const delta = Math.min(0.2, (now - demolitionReplayPlayback.lastTick) / 1000);
+
+  demolitionReplayPlayback.lastTick = now;
+  if (demolitionReplayPlayback.playing) {
+    demolitionReplayPlayback.currentTime = THREE.MathUtils.clamp(
+      demolitionReplayPlayback.currentTime + delta * demolitionReplayPlayback.speed,
+      0,
+      demolitionReplayRecording.duration,
+    );
+    if (demolitionReplayPlayback.currentTime >= demolitionReplayRecording.duration) {
+      demolitionReplayPlayback.playing = false;
+    }
+  }
+
+  applyDemolitionReplayTime(getReplayDisplayTime());
+}
+
+function updateReplayUiReadouts(): void {
+  const selected = demolitionReplayPlayback.selectedWall;
+  const selectedTrack = selected === 'all' ? null : demolitionReplayRecording.wallTracks.get(selected);
+  const firstWallDestroyed = replayFaces
+    .map((face) => demolitionReplayRecording.wallTracks.get(face)?.destroyedTime)
+    .filter((time): time is number => typeof time === 'number')
+    .sort((a, b) => a - b)[0] ?? null;
+  const lastWallDestroyed = replayFaces
+    .map((face) => demolitionReplayRecording.wallTracks.get(face)?.destroyedTime)
+    .filter((time): time is number => typeof time === 'number')
+    .sort((a, b) => b - a)[0] ?? null;
+
+  lastReplayStatsText = [
+    demolitionReplayRecording.recording ? 'Replay: recording demolition' : demolitionReplayRecording.complete ? 'Replay: ready' : 'Replay: waiting for first wall contact',
+    `duration ${demolitionReplayRecording.duration.toFixed(2)}s`,
+    `time ${demolitionReplayPlayback.currentTime.toFixed(2)}s`,
+    `H ${demolitionReplayPlayback.speed.toFixed(2)}x`,
+    `first hit ${demolitionReplayRecording.firstWallHit === null ? '-' : `${demolitionReplayRecording.firstWallHit.toFixed(2)}s`}`,
+    `first destroyed ${firstWallDestroyed === null ? '-' : `${firstWallDestroyed.toFixed(2)}s`}`,
+    `last destroyed ${lastWallDestroyed === null ? '-' : `${lastWallDestroyed.toFixed(2)}s`}`,
+    `selected ${selected}`,
+    `selected destroyed ${selectedTrack?.destroyedTime === null || !selectedTrack ? '-' : `${selectedTrack.destroyedTime.toFixed(2)}s`}`,
+    `events ${selectedTrack ? selectedTrack.events.length : demolitionReplayRecording.events.length}`,
+  ].join(' | ');
+  lastReplayMarkerText = demolitionReplayRecording.events
+    .slice(-10)
+    .map((event) => `${event.timestamp.toFixed(1)} ${event.face ? `${event.face} ` : ''}${event.type}`)
+    .join(' | ') || 'Markers: none';
+
+  replayUiState.currentTime = Number(demolitionReplayPlayback.currentTime.toFixed(2));
+  replayUiState.hValue = demolitionReplayPlayback.speed;
+  replayUiState.selectedWall = demolitionReplayPlayback.selectedWall;
+  replayUiState.focusSelectedWall = demolitionReplayPlayback.focusSelectedWall;
+  replayUiState.isolateSelectedWall = demolitionReplayPlayback.isolateSelectedWall;
+  replayUiState.showGhostOriginal = demolitionReplayPlayback.showGhostOriginal;
+  replayUiState.reverseReconstruction = demolitionReplayPlayback.reverseReconstruction;
+  replayUiState.cameraMode = demolitionReplayPlayback.cameraMode;
+  replayUiState.stats = lastReplayStatsText;
+  replayUiState.eventMarkers = lastReplayMarkerText;
+  replayScrubController?.max(Math.max(0.1, demolitionReplayRecording.duration));
+  replayUiControllers.forEach((controller) => controller.updateDisplay());
 }
 
 function addLightsAndGround(): void {
@@ -1095,7 +2165,7 @@ function createBulldozer(): void {
     materials.bulldozer,
     240,
   );
-  bulldozer.body.setAdditionalSolverIterations(8);
+  bulldozer.body.setAdditionalSolverIterations(2);
 
   const cab = createBoxMesh(cabHalf, materials.bulldozer);
   cab.position.copy(cabLocalOffset);
@@ -1124,7 +2194,7 @@ function createBulldozer(): void {
     materials.blade,
     88,
   );
-  blade.body.setAdditionalSolverIterations(8);
+  blade.body.setAdditionalSolverIterations(2);
 }
 
 function registerHouseBlock(
@@ -1140,8 +2210,11 @@ function registerHouseBlock(
     face,
     home: home.clone(),
     row,
+    sag: new THREE.Vector3(),
   };
+  entity.mesh.userData.replayFace = face;
   wallBlocks.push(entity);
+  registerStructuralNode(entity);
   return entity;
 }
 
@@ -1435,8 +2508,9 @@ function isPhysicalWallBlock(face: HouseBlockFace, row: number, column: number):
   if (isRoofFace(face)) {
     return true;
   }
+  void row;
   void column;
-  return row < physicalWallRows;
+  return true;
 }
 
 function isLowerPhysicalFacadeBlock(face: HouseBlockFace, row: number): boolean {
@@ -1505,6 +2579,7 @@ function createPhysicalHouseBlock(
           brickHeight: masonryBrickHeight,
           brickLength: masonryBrickLength,
           castShadow: row < 2,
+          doubleSided: true,
           face,
           maxColumns: face === 'front' || face === 'back' ? 8 : 8,
           maxRows: 6,
@@ -1515,100 +2590,6 @@ function createPhysicalHouseBlock(
   }
 
   decorateHouseBlock(entity);
-
-  if (isLowerPhysicalFacadeBlock(face, row)) {
-    entity.mesh.visible = false;
-  }
-}
-
-function createInteriorPartition(
-  name: string,
-  halfExtents: THREE.Vector3,
-  position: THREE.Vector3,
-): void {
-  const splitAlongX = halfExtents.x >= halfExtents.z;
-  const longHalf = splitAlongX ? halfExtents.x : halfExtents.z;
-  const columnCount = Math.max(3, Math.min(8, Math.ceil(longHalf * 2 / 10)));
-  const rowCount = Math.max(3, Math.min(5, Math.ceil(halfExtents.y * 2 / 5)));
-  const segmentHalf = new THREE.Vector3(
-    splitAlongX ? halfExtents.x / columnCount : halfExtents.x,
-    halfExtents.y / rowCount,
-    splitAlongX ? halfExtents.z : halfExtents.z / columnCount,
-  );
-  const baseY = position.y - halfExtents.y;
-
-  for (let row = 0; row < rowCount; row += 1) {
-    for (let column = 0; column < columnCount; column += 1) {
-      const offset = (column - (columnCount - 1) / 2) * longHalf * 2 / columnCount;
-      const segmentPosition = new THREE.Vector3(
-        position.x + (splitAlongX ? offset : 0),
-        baseY + segmentHalf.y + row * segmentHalf.y * 2,
-        position.z + (splitAlongX ? 0 : offset),
-      );
-
-      const segment = createFixedBox(
-        `${name}-${row}-${column}`,
-        'wall',
-        segmentHalf,
-        segmentPosition,
-        createBrickMaterialForBox(segmentHalf, 'fragment', segmentPosition, row),
-        THREE.MathUtils.clamp(segmentHalf.x * segmentHalf.y * segmentHalf.z * 0.18, 3.5, 10),
-        true,
-      );
-
-      replaceEntityVisual(
-        segment,
-        createIntactBrickWallVisual(
-          segmentHalf,
-          hashStringSeed(name) + row * 211 + column * 37,
-          {
-            brickHeight: masonryBrickHeight,
-            brickLength: masonryBrickLength,
-            castShadow: false,
-            doubleSided: true,
-            face: 'fragment',
-            maxColumns: 10,
-            maxRows: 5,
-            worldPosition: segmentPosition,
-          },
-        ),
-      );
-    }
-  }
-}
-
-function createHouseInterior(): void {
-  const frontZ = solidWallZ;
-  const backZ = solidWallZ - houseDepth;
-  const interiorWidth = solidWallWidth - solidWallThickness * 2.6;
-  const interiorDepth = houseDepth - solidWallThickness * 2.4;
-  const floorY = 0.035;
-  const midZ = houseCenterZ;
-  const lowerFloorHeight = solidWallHeight / 2;
-  const partitionHeight = lowerFloorHeight * 0.48;
-  const partitionThickness = solidWallThickness * 0.36;
-  const partitionY = floorY + partitionHeight;
-
-  createInteriorPartition(
-    'interior-cross-wall-left',
-    new THREE.Vector3(interiorWidth * 0.28, partitionHeight, partitionThickness),
-    new THREE.Vector3(-interiorWidth * 0.21, partitionY, midZ),
-  );
-  createInteriorPartition(
-    'interior-cross-wall-right',
-    new THREE.Vector3(interiorWidth * 0.24, partitionHeight, partitionThickness),
-    new THREE.Vector3(interiorWidth * 0.26, partitionY, midZ),
-  );
-  createInteriorPartition(
-    'interior-center-wall-front',
-    new THREE.Vector3(partitionThickness, partitionHeight, interiorDepth * 0.18),
-    new THREE.Vector3(0, partitionY, frontZ - interiorDepth * 0.23),
-  );
-  createInteriorPartition(
-    'interior-center-wall-back',
-    new THREE.Vector3(partitionThickness, partitionHeight, interiorDepth * 0.18),
-    new THREE.Vector3(0, partitionY, backZ + interiorDepth * 0.23),
-  );
 }
 
 function createWallBuilding(): void {
@@ -1659,40 +2640,6 @@ function createWallBuilding(): void {
     }
   }
 
-  for (let row = 0; row < physicalWallRows; row += 1) {
-    const y = blockHeight / 2 + row * blockHeight;
-
-    createPhysicalFacadeRowVisual(
-      'front',
-      row,
-      new THREE.Vector3(solidWallWidth / 2, blockHeight / 2, solidWallThickness / 2),
-      new THREE.Vector3(0, y, frontZ),
-    );
-    createPhysicalFacadeRowVisual(
-      'back',
-      row,
-      new THREE.Vector3(solidWallWidth / 2, blockHeight / 2, solidWallThickness / 2),
-      new THREE.Vector3(0, y, backZ),
-    );
-  }
-
-  for (let row = physicalWallRows; row < wallBlockRows; row += 1) {
-    const y = blockHeight / 2 + row * blockHeight;
-
-    createStaticHouseRowVisual(
-      'front',
-      row,
-      new THREE.Vector3(solidWallWidth / 2, blockHeight / 2, solidWallThickness / 2),
-      new THREE.Vector3(0, y, frontZ),
-    );
-    createStaticHouseRowVisual(
-      'back',
-      row,
-      new THREE.Vector3(solidWallWidth / 2, blockHeight / 2, solidWallThickness / 2),
-      new THREE.Vector3(0, y, backZ),
-    );
-  }
-
   for (let row = 0; row < wallBlockRows; row += 1) {
     for (let column = 0; column < wallSideColumns; column += 1) {
       const y = blockHeight / 2 + row * blockHeight;
@@ -1723,47 +2670,12 @@ function createWallBuilding(): void {
     }
   }
 
-  for (let row = 0; row < physicalWallRows; row += 1) {
-    const y = blockHeight / 2 + row * blockHeight;
-
-    createPhysicalFacadeRowVisual(
-      'left',
-      row,
-      new THREE.Vector3(solidWallThickness / 2, blockHeight / 2, houseDepth / 2),
-      new THREE.Vector3(leftX, y, houseCenterZ),
-    );
-    createPhysicalFacadeRowVisual(
-      'right',
-      row,
-      new THREE.Vector3(solidWallThickness / 2, blockHeight / 2, houseDepth / 2),
-      new THREE.Vector3(rightX, y, houseCenterZ),
-    );
-  }
-
-  for (let row = physicalWallRows; row < wallBlockRows; row += 1) {
-    const y = blockHeight / 2 + row * blockHeight;
-
-    createStaticHouseRowVisual(
-      'left',
-      row,
-      new THREE.Vector3(solidWallThickness / 2, blockHeight / 2, houseDepth / 2),
-      new THREE.Vector3(leftX, y, houseCenterZ),
-    );
-    createStaticHouseRowVisual(
-      'right',
-      row,
-      new THREE.Vector3(solidWallThickness / 2, blockHeight / 2, houseDepth / 2),
-      new THREE.Vector3(rightX, y, houseCenterZ),
-    );
-  }
-
-  createHouseInterior();
-
   const roofRise = 1.55 * houseScale;
-  const roofRun = houseDepth / 2 + 4.8;
+  const roofOverhang = 0.48 * houseScale;
+  const roofRun = houseDepth / 2 + roofOverhang;
   const roofSlopeLength = Math.hypot(roofRun, roofRise);
   const roofAngle = Math.atan2(roofRise, roofRun);
-  const roofHalf = new THREE.Vector3(solidWallWidth / 2 + 4.8, 0.85, roofSlopeLength / 2);
+  const roofHalf = new THREE.Vector3(solidWallWidth / 2 + roofOverhang, 0.85, roofSlopeLength / 2);
   const roofY = solidWallHeight + roofRise / 2 + 0.32;
   const frontRoofPosition = new THREE.Vector3(0, roofY, houseCenterZ + roofRun / 2);
   const backRoofPosition = new THREE.Vector3(0, roofY, houseCenterZ - roofRun / 2);
@@ -1802,50 +2714,11 @@ function createWallBuilding(): void {
     0,
     backRoofPosition,
   );
-}
-
-function createBridge(): void {
-  const deckZ = solidWallZ - houseDepth - 42;
-  const deckY = 5.35;
-  const deckHalfExtents = new THREE.Vector3(12.35, 0.32, 3.1);
-  const deckUndersideY = deckY - deckHalfExtents.y;
-
-  const deck = createFixedBox(
-    'bridge-deck-main',
-    'deck',
-    deckHalfExtents,
-    new THREE.Vector3(0, deckY, deckZ),
-    materials.deck,
-    256,
-    true,
-  );
-  bridgeDecks.push(deck);
-
-  for (let i = 0; i < 7; i += 1) {
-    const stripe = createBoxMesh(new THREE.Vector3(0.55, 0.012, 0.08), materials.stripe);
-    stripe.position.set(-9 + i * 3, deckHalfExtents.y + 0.02, 0);
-    deck.mesh.add(stripe);
-  }
-
-  for (let i = 0; i < 4; i += 1) {
-    const x = -9 + i * 6;
-    for (const side of ['left', 'right'] as const) {
-      const supportHalfHeight = deckUndersideY / 2;
-      const support = createFixedBox(
-        `bridge-column-${i}-${side}`,
-        'column',
-        new THREE.Vector3(0.48, supportHalfHeight, 0.48),
-        new THREE.Vector3(x, supportHalfHeight, deckZ + (side === 'left' ? -2.05 : 2.05)),
-        materials.columnFresh,
-        38,
-        true,
-      );
-      bridgeSupports.push({ entity: support, side });
-    }
-  }
+  rebuildStructuralGraph();
 }
 
 function resetPrototype(): void {
+  resetDemolitionReplaySystem();
   clearPrototype();
   physicsWorld = new RAPIER.World({ x: 0, y: tuning.gravity, z: 0 });
   physicsWorld.integrationParameters.dt = fixedDt;
@@ -1871,6 +2744,7 @@ function resetPrototype(): void {
   });
   dozerSpeed = 0;
   dozerYaw = 0;
+  dozerTurnSpeed = 0;
   cameraPanOffset.set(0, 0, 0);
   cameraYaw = 0;
   cameraPitch = 0.48;
@@ -1883,7 +2757,6 @@ function resetPrototype(): void {
   addLightsAndGround();
   createBulldozer();
   createWallBuilding();
-  createBridge();
 }
 
 function replaceFixedWithDynamic(entity: PhysicsEntity, impulse = new THREE.Vector3()): void {
@@ -1913,6 +2786,7 @@ function replaceFixedWithDynamic(entity: PhysicsEntity, impulse = new THREE.Vect
   const impulseScale = entity.kind === 'wall' ? 0.34 : 1;
   entity.body.applyImpulse({ x: impulse.x * impulseScale, y: impulse.y * impulseScale, z: impulse.z * impulseScale }, true);
   entity.kind = entity.kind === 'deck' ? 'deck' : 'debris';
+  structuralDirty = true;
 }
 
 function isRoofFace(face: HouseBlockFace): boolean {
@@ -1928,6 +2802,329 @@ function getHouseBlock(face: HouseBlockFace, row: number, column: number): Physi
     const info = block.wallBlock;
     return info?.face === face && info.row === row && info.column === column;
   });
+}
+
+function getStructuralNodeId(info: WallBlockInfo): string {
+  return `${info.face}:${info.row}:${info.column}`;
+}
+
+function isStructuralEntityStanding(entity: PhysicsEntity): boolean {
+  return entities.includes(entity) && entity.stage < 2 && !entity.body.isDynamic();
+}
+
+function registerStructuralNode(entity: PhysicsEntity): void {
+  const info = entity.wallBlock;
+
+  if (!info) {
+    return;
+  }
+
+  structuralNodes.set(getStructuralNodeId(info), {
+    active: true,
+    centerOfMass: info.home.clone(),
+    entity,
+    fractureState: 'intact',
+    id: getStructuralNodeId(info),
+    islandId: -1,
+    mass: entity.mass,
+    material: isRoofFace(info.face) ? 'roofPanel' : 'brickMasonry',
+    sleepState: 'fixed',
+    support: !isRoofFace(info.face) && info.row === 0,
+  });
+  structuralDirty = true;
+}
+
+function clearStructuralGraph(): void {
+  structuralNodes.clear();
+  structuralBonds = [];
+  wallFaceStress.clear();
+  structuralDirty = true;
+  lastStructuralStats = {
+    brokenBonds: 0,
+    islandCount: 0,
+    nodes: 0,
+    unsupportedIslands: 0,
+    unsupportedNodes: new Set<string>(),
+  };
+}
+
+function addStructuralBond(
+  a: string,
+  b: string,
+  kind: StructuralBond['kind'],
+  material: StructuralMaterialId,
+  strengthScale = 1,
+): void {
+  if (a === b || !structuralNodes.has(a) || !structuralNodes.has(b)) {
+    return;
+  }
+
+  const id = [a, b].sort().join('|');
+
+  if (structuralBonds.some((bond) => bond.id === id)) {
+    return;
+  }
+
+  const profile = materialProfiles[material];
+  const randomness = seededRange(hashStringSeed(id), 0.86, 1.14);
+
+  structuralBonds.push({
+    a,
+    b,
+    broken: false,
+    compressionStrength: profile.compressiveLimit * strengthScale * randomness,
+    damageCompression: 0,
+    damageShear: 0,
+    damageTension: 0,
+    damping: profile.damping,
+    id,
+    kind,
+    material,
+    randomness,
+    shearStrength: profile.shearLimit * strengthScale * randomness,
+    stiffness: profile.stiffness,
+    tensionStrength: profile.tensileLimit * strengthScale * randomness,
+  });
+}
+
+function rebuildStructuralGraph(): void {
+  structuralBonds = [];
+
+  const wallFaces: HouseBlockFace[] = ['front', 'back', 'left', 'right'];
+
+  for (const face of wallFaces) {
+    const columns = getHouseFaceColumnCount(face);
+
+    for (let row = 0; row < wallBlockRows; row += 1) {
+      for (let column = 0; column < columns; column += 1) {
+        const block = getHouseBlock(face, row, column);
+
+        if (!block?.wallBlock) {
+          continue;
+        }
+
+        const id = getStructuralNodeId(block.wallBlock);
+        const right = getHouseBlock(face, row, column + 1);
+        const above = getHouseBlock(face, row + 1, column);
+
+        if (right?.wallBlock) {
+          addStructuralBond(id, getStructuralNodeId(right.wallBlock), 'horizontal', 'mortarJoint', 1.08);
+        }
+        if (above?.wallBlock) {
+          addStructuralBond(id, getStructuralNodeId(above.wallBlock), 'vertical', 'mortarJoint', 0.92);
+        }
+      }
+    }
+  }
+
+  for (let row = 0; row < wallBlockRows; row += 1) {
+    const frontLeft = getHouseBlock('front', row, 0);
+    const leftFront = getHouseBlock('left', row, 0);
+    const frontRight = getHouseBlock('front', row, wallBlockColumns - 1);
+    const rightFront = getHouseBlock('right', row, 0);
+    const backLeft = getHouseBlock('back', row, 0);
+    const leftBack = getHouseBlock('left', row, wallSideColumns - 1);
+    const backRight = getHouseBlock('back', row, wallBlockColumns - 1);
+    const rightBack = getHouseBlock('right', row, wallSideColumns - 1);
+
+    if (frontLeft?.wallBlock && leftFront?.wallBlock) {
+      addStructuralBond(getStructuralNodeId(frontLeft.wallBlock), getStructuralNodeId(leftFront.wallBlock), 'corner', 'mortarJoint', 1.18);
+    }
+    if (frontRight?.wallBlock && rightFront?.wallBlock) {
+      addStructuralBond(getStructuralNodeId(frontRight.wallBlock), getStructuralNodeId(rightFront.wallBlock), 'corner', 'mortarJoint', 1.18);
+    }
+    if (backLeft?.wallBlock && leftBack?.wallBlock) {
+      addStructuralBond(getStructuralNodeId(backLeft.wallBlock), getStructuralNodeId(leftBack.wallBlock), 'corner', 'mortarJoint', 1.18);
+    }
+    if (backRight?.wallBlock && rightBack?.wallBlock) {
+      addStructuralBond(getStructuralNodeId(backRight.wallBlock), getStructuralNodeId(rightBack.wallBlock), 'corner', 'mortarJoint', 1.18);
+    }
+  }
+
+  const frontRoof = getHouseBlock('roof-front', wallBlockRows, 0);
+  const backRoof = getHouseBlock('roof-back', wallBlockRows, 0);
+
+  if (frontRoof?.wallBlock) {
+    const roofId = getStructuralNodeId(frontRoof.wallBlock);
+
+    for (let column = 0; column < wallBlockColumns; column += 1) {
+      const top = getHouseBlock('front', wallBlockRows - 1, column);
+      if (top?.wallBlock) {
+        addStructuralBond(roofId, getStructuralNodeId(top.wallBlock), 'roof-seat', 'roofPanel', 0.74);
+      }
+    }
+  }
+
+  if (backRoof?.wallBlock) {
+    const roofId = getStructuralNodeId(backRoof.wallBlock);
+
+    for (let column = 0; column < wallBlockColumns; column += 1) {
+      const top = getHouseBlock('back', wallBlockRows - 1, column);
+      if (top?.wallBlock) {
+        addStructuralBond(roofId, getStructuralNodeId(top.wallBlock), 'roof-seat', 'roofPanel', 0.74);
+      }
+    }
+  }
+
+  structuralDirty = true;
+  updateStructuralSupportGraph();
+}
+
+function updateStructuralSupportGraph(force = false): StructuralSupportSnapshot {
+  if (!force && !structuralDirty) {
+    return lastStructuralStats;
+  }
+
+  const activeNodeIds = new Set<string>();
+
+  for (const node of structuralNodes.values()) {
+    node.active = isStructuralEntityStanding(node.entity);
+    const bodyStillExists = entities.includes(node.entity);
+    const bodyIsDynamic = bodyStillExists ? node.entity.body.isDynamic() : false;
+
+    node.sleepState = bodyIsDynamic ? 'dynamic' : 'fixed';
+    node.fractureState = node.entity.stage >= 2 || !bodyStillExists ? 'fractured' : bodyIsDynamic ? 'dynamic' : 'intact';
+    node.centerOfMass.copy(node.entity.wallBlock?.home ?? node.entity.mesh.position);
+    node.islandId = -1;
+
+    if (node.active) {
+      activeNodeIds.add(node.id);
+    }
+  }
+
+  const adjacency = new Map<string, string[]>();
+
+  for (const id of activeNodeIds) {
+    adjacency.set(id, []);
+  }
+
+  for (const bond of structuralBonds) {
+    if (bond.broken || !activeNodeIds.has(bond.a) || !activeNodeIds.has(bond.b)) {
+      continue;
+    }
+
+    adjacency.get(bond.a)?.push(bond.b);
+    adjacency.get(bond.b)?.push(bond.a);
+  }
+
+  const unsupportedNodes = new Set<string>();
+  const visited = new Set<string>();
+  let islandCount = 0;
+  let unsupportedIslands = 0;
+
+  for (const id of activeNodeIds) {
+    if (visited.has(id)) {
+      continue;
+    }
+
+    const stack = [id];
+    const component: string[] = [];
+    let hasSupport = false;
+
+    while (stack.length > 0) {
+      const current = stack.pop();
+
+      if (!current || visited.has(current)) {
+        continue;
+      }
+
+      visited.add(current);
+      component.push(current);
+      const node = structuralNodes.get(current);
+
+      if (node?.support) {
+        hasSupport = true;
+      }
+
+      for (const neighbor of adjacency.get(current) ?? []) {
+        if (!visited.has(neighbor)) {
+          stack.push(neighbor);
+        }
+      }
+    }
+
+    for (const componentId of component) {
+      const node = structuralNodes.get(componentId);
+      if (node) {
+        node.islandId = islandCount;
+      }
+    }
+
+    if (!hasSupport) {
+      unsupportedIslands += 1;
+      component.forEach((componentId) => unsupportedNodes.add(componentId));
+    }
+
+    islandCount += 1;
+  }
+
+  lastStructuralStats = {
+    brokenBonds: structuralBonds.filter((bond) => bond.broken).length,
+    islandCount,
+    nodes: activeNodeIds.size,
+    unsupportedIslands,
+    unsupportedNodes,
+  };
+  structuralDirty = false;
+  return lastStructuralStats;
+}
+
+function isStructuralNodeUnsupported(info: WallBlockInfo, snapshot = updateStructuralSupportGraph()): boolean {
+  return snapshot.unsupportedNodes.has(getStructuralNodeId(info));
+}
+
+function breakStructuralNodeBonds(info: WallBlockInfo): void {
+  const id = getStructuralNodeId(info);
+  let changed = false;
+
+  for (const bond of structuralBonds) {
+    if (!bond.broken && (bond.a === id || bond.b === id)) {
+      bond.broken = true;
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    structuralDirty = true;
+  }
+}
+
+function applyStructuralDamage(entity: PhysicsEntity, amount: number, impulse: THREE.Vector3): void {
+  const info = entity.wallBlock;
+
+  if (!info || isRoofFace(info.face) || entity.stage >= 2) {
+    return;
+  }
+
+  const id = getStructuralNodeId(info);
+  const speedLike = Math.min(2.4, impulse.length() * 0.18);
+  const verticalLoad = Math.max(0, -impulse.y);
+  let changed = false;
+
+  for (const bond of structuralBonds) {
+    if (bond.broken || (bond.a !== id && bond.b !== id)) {
+      continue;
+    }
+
+    const directionScale = bond.kind === 'vertical' ? 1.12 : bond.kind === 'horizontal' ? 0.82 : 0.96;
+
+    bond.damageShear += amount * (0.42 + speedLike) * directionScale;
+    bond.damageTension += Math.max(0, amount * 0.18 + impulse.y * 0.22);
+    bond.damageCompression += verticalLoad * 0.2;
+
+    if (
+      bond.damageShear >= bond.shearStrength ||
+      bond.damageTension >= bond.tensionStrength ||
+      bond.damageCompression >= bond.compressionStrength
+    ) {
+      bond.broken = true;
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    structuralDirty = true;
+  }
 }
 
 function getWallBlock(row: number, column: number): PhysicsEntity | undefined {
@@ -1951,12 +3148,33 @@ function getFaceFallDirection(face: HouseBlockFace): THREE.Vector3 {
   }
 }
 
+function getFaceLowResistanceDirection(face: HouseBlockFace): THREE.Vector3 {
+  switch (face) {
+    case 'back':
+      return new THREE.Vector3(0, 0, -1);
+    case 'left':
+      return new THREE.Vector3(1, 0, 0);
+    case 'right':
+      return new THREE.Vector3(-1, 0, 0);
+    case 'roof-back':
+      return new THREE.Vector3(0, 0.2, -1);
+    case 'roof-front':
+    case 'front':
+    default:
+      return new THREE.Vector3(0, 0, 1);
+  }
+}
+
 function removeEntityFromWorld(entity: PhysicsEntity): void {
+  if (entity.wallBlock) {
+    breakStructuralNodeBonds(entity.wallBlock);
+  }
   physicsWorld.removeRigidBody(entity.body);
   scene.remove(entity.mesh);
   disposeObjectGeometry(entity.mesh);
   entities = entities.filter((candidate) => candidate !== entity);
   wallBlocks = wallBlocks.filter((candidate) => candidate !== entity);
+  structuralDirty = true;
 }
 
 function getDynamicDebrisCount(): number {
@@ -2097,6 +3315,26 @@ function hasGroundOrBodySupport(entity: PhysicsEntity): boolean {
   return false;
 }
 
+function hasGroundSupportForSettling(entity: PhysicsEntity): boolean {
+  const position = entity.body.translation();
+  return position.y - entity.halfExtents.y <= 0.34;
+}
+
+function getFloatingSettledDebrisCount(): number {
+  let count = 0;
+
+  for (const object of settledDebrisVisuals) {
+    const data = object.userData.settledDebris as { halfExtents?: THREE.Vector3 } | undefined;
+    const halfExtents = data?.halfExtents;
+
+    if (halfExtents && object.position.y - halfExtents.y > 0.45) {
+      count += 1;
+    }
+  }
+
+  return count;
+}
+
 function reactivateSettledDebrisNearBulldozer(): void {
   if (settledDebrisVisuals.length === 0) {
     return;
@@ -2177,11 +3415,14 @@ function settleDynamicRubble(): void {
 
     const position = entity.body.translation();
     const distanceFromDozer = Math.hypot(position.x - dozerPosition.x, position.z - dozerPosition.z);
+    const structuralCollapseGraceSteps = entity.mesh.userData.structuralCollapseDebris
+      ? distanceFromDozer < 8 ? 100 : 42
+      : 18;
 
     if (
-      simulationStep - entity.createdStep < 45 ||
-      distanceFromDozer < debrisSettleDistanceFromDozer * 0.7 ||
-      !hasGroundOrBodySupport(entity)
+      simulationStep - entity.createdStep < structuralCollapseGraceSteps ||
+      distanceFromDozer < 1.2 ||
+      !hasGroundSupportForSettling(entity)
     ) {
       continue;
     }
@@ -2202,13 +3443,18 @@ function settleDynamicRubble(): void {
     const speedSq = velocity.x * velocity.x + velocity.y * velocity.y + velocity.z * velocity.z;
     const angularSq = angularVelocity.x * angularVelocity.x + angularVelocity.y * angularVelocity.y + angularVelocity.z * angularVelocity.z;
     const distanceFromDozer = Math.hypot(position.x - dozerPosition.x, position.z - dozerPosition.z);
+    const isStructuralCollapseDebris = Boolean(entity.mesh.userData.structuralCollapseDebris);
+    const structuralNearDozer = isStructuralCollapseDebris && distanceFromDozer < 8;
+    const minSettleAge = isStructuralCollapseDebris ? (structuralNearDozer ? 150 : 64) : dynamicDebrisMinAgeSteps;
+    const settleSteps = isStructuralCollapseDebris ? (structuralNearDozer ? dynamicDebrisSettleSteps * 3 : dynamicDebrisSettleSteps) : dynamicDebrisSettleSteps;
+    const oldDebrisSettleAge = isStructuralCollapseDebris ? (structuralNearDozer ? 520 : 180) : 240;
 
     if (
-      age > dynamicDebrisMinAgeSteps &&
+      age > minSettleAge &&
       distanceFromDozer > debrisSettleDistanceFromDozer &&
-      hasGroundOrBodySupport(entity) &&
-      speedSq < 0.08 &&
-      angularSq < 0.12
+      hasGroundSupportForSettling(entity) &&
+      speedSq < 0.18 &&
+      angularSq < 0.22
     ) {
       entity.settleCandidateSteps += 1;
     } else {
@@ -2216,8 +3462,8 @@ function settleDynamicRubble(): void {
     }
 
     if (
-      entity.settleCandidateSteps >= dynamicDebrisSettleSteps ||
-      (age > 360 && distanceFromDozer > debrisSettleDistanceFromDozer * 1.4 && hasGroundOrBodySupport(entity))
+      entity.settleCandidateSteps >= settleSteps ||
+      (age > oldDebrisSettleAge && distanceFromDozer > debrisSettleDistanceFromDozer * 1.2 && hasGroundSupportForSettling(entity))
     ) {
       settleEntityAsVisual(entity);
     }
@@ -2281,9 +3527,10 @@ function fragmentWallChunk(chunk: WallChunk): void {
           createBrickMaterialForBox(pieceHalf, 'fragment', piecePosition, brick.row),
           shouldShard ? Math.max(1.5, brick.mass / (piecesX * piecesY)) : brick.mass,
           chunkRotation,
-          shouldShard ? 0.9 : 1.1,
-          shouldShard ? 1.2 : 1.35,
+          shouldShard ? 0.38 : 0.44,
+          shouldShard ? 0.62 : 0.7,
         );
+        brickEntity.body.setGravityScale(1.35, true);
         applyIrregularMasonryVisual(
           brickEntity,
           'fragment',
@@ -2295,16 +3542,16 @@ function fragmentWallChunk(chunk: WallChunk): void {
         brickEntity.body.setLinvel(
           {
             x: chunkVelocity.x * 0.55 + spread + shardKick,
-            y: Math.min(-0.35, chunkVelocity.y * 0.35 - (0.75 + brick.row * 0.08) * destructionSpeed) + localY * 0.04,
+            y: Math.min(-1.15, chunkVelocity.y * 0.22 - (1.15 + brick.row * 0.12) * destructionSpeed),
             z: chunkVelocity.z * 0.55 + outward.z * (0.42 + brick.row * 0.05) * destructionSpeed,
           },
           true,
         );
         brickEntity.body.setAngvel(
           {
-            x: ((index % 3 - 1) * 0.28 + (yIndex - 0.5) * 0.32) * destructionSpeed,
-            y: (spread * 1.8 + shardKick) * destructionSpeed,
-            z: ((brick.row - 3) * 0.12 + (xIndex - 0.5) * 0.28) * destructionSpeed,
+            x: ((index % 3 - 1) * 0.16 + (yIndex - 0.5) * 0.18) * destructionSpeed,
+            y: (spread * 0.9 + shardKick * 0.45) * destructionSpeed,
+            z: ((brick.row - 3) * 0.06 + (xIndex - 0.5) * 0.16) * destructionSpeed,
           },
           true,
         );
@@ -2324,7 +3571,7 @@ function processWallChunks(): void {
     }
 
     const height = chunk.entity.body.translation().y;
-    const shouldFragment = simulationStep >= chunk.fragmentAfterStep || height < 1.6 || chunk.entity.damage > wallBlockBreakDamage * 2.2;
+    const shouldFragment = simulationStep >= chunk.fragmentAfterStep || height < 1.6 || chunk.entity.damage > getWallBreakDamage() * 2.2;
 
     if (shouldFragment) {
       fragmentWallChunk(chunk);
@@ -2348,7 +3595,7 @@ function applyWallBulge(entity: PhysicsEntity, impulse: THREE.Vector3, amount: n
   }
 
   push.normalize();
-  const baseAmount = THREE.MathUtils.clamp(amount * 0.055, 0.18, 0.68);
+  const baseAmount = THREE.MathUtils.clamp(amount * 0.24, 0.55, 2.35);
 
   for (const block of wallBlocks) {
     const blockInfo = block.wallBlock;
@@ -2370,82 +3617,71 @@ function applyWallBulge(entity: PhysicsEntity, impulse: THREE.Vector3, amount: n
       blockInfo.bulge.setLength(wallBulgeLimit);
     }
 
-    const target = blockInfo.home.clone().add(blockInfo.bulge);
-    block.body.setTranslation({ x: target.x, y: target.y, z: target.z }, true);
+    revealPhysicalFacadeRow(blockInfo.face, blockInfo.row);
     syncMeshFromBody(block);
+    applyWallBlockVisualDeformation(block);
   }
 }
 
-function fragmentRoofPanel(entity: PhysicsEntity, impulse: THREE.Vector3, detachOffset?: THREE.Vector3): void {
+function fragmentRoofPanel(entity: PhysicsEntity, _impulse: THREE.Vector3, detachOffset?: THREE.Vector3): void {
   const info = entity.wallBlock;
 
   if (!info || !isRoofFace(info.face)) {
     return;
   }
+  addDemolitionReplayEvent('roof-collapse', `${info.face} roof collapse`, info.face);
 
   const position = entity.body.translation();
   const rotation = entity.body.rotation();
   const center = new THREE.Vector3(position.x, position.y, position.z);
   const quaternion = new THREE.Quaternion(rotation.x, rotation.y, rotation.z, rotation.w);
-  const right = new THREE.Vector3(1, 0, 0).applyQuaternion(quaternion);
-  const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(quaternion);
-  const push = new THREE.Vector3(impulse.x, 0, impulse.z);
-  const pushDirection = push.lengthSq() > 0.001 ? push.normalize() : getFaceFallDirection(info.face);
-  const columns = getDynamicDebrisCount() > maxLiveDynamicDebris * 0.75 ? 4 : 5;
-  const rows = 3;
-  const pieceHalf = new THREE.Vector3(
-    Math.max(0.8, entity.halfExtents.x / columns - 0.08),
-    entity.halfExtents.y,
-    Math.max(0.8, entity.halfExtents.z / rows - 0.08),
-  );
   const baseVelocity = entity.body.isDynamic() ? entity.body.linvel() : { x: 0, y: 0, z: 0 };
   const destructionSpeed = getDestructionSpeed();
   const sourceName = entity.name;
   const sourceMass = entity.mass;
+  const slabHalf = entity.halfExtents.clone();
+
+  slabHalf.x *= 0.96;
+  slabHalf.z *= 0.96;
 
   removeEntityFromWorld(entity);
 
-  for (let column = 0; column < columns; column += 1) {
-    for (let row = 0; row < rows; row += 1) {
-      const localX = (column - (columns - 1) / 2) * entity.halfExtents.x * 2 / columns;
-      const localZ = (row - (rows - 1) / 2) * entity.halfExtents.z * 2 / rows;
-      const spread = (column - (columns - 1) / 2) * 0.09;
-      const piecePosition = center.clone()
-        .addScaledVector(right, localX)
-        .addScaledVector(forward, localZ)
-        .add(detachOffset ?? new THREE.Vector3());
-      const roofPiece = createDynamicBox(
-        `${sourceName}-piece-${row}-${column}`,
-        'debris',
-        pieceHalf,
-        piecePosition,
-        materials.roof,
-        sourceMass / (columns * rows),
-        quaternion,
-        0.86,
-        1.05,
-      );
+  const roofSlab = createDynamicBox(
+    `${sourceName}-collapsed-slab`,
+    'debris',
+    slabHalf,
+    center.clone().add(detachOffset ?? new THREE.Vector3()),
+    materials.roof,
+    sourceMass,
+    quaternion,
+    0.42,
+    0.62,
+  );
 
-      roofPiece.body.setLinvel(
-        {
-          x: baseVelocity.x * 0.35 + pushDirection.x * (0.75 + row * 0.08) * destructionSpeed + spread,
-          y: -1.2 * destructionSpeed - row * 0.08,
-          z: baseVelocity.z * 0.35 + pushDirection.z * (0.75 + row * 0.08) * destructionSpeed,
-        },
-        true,
-      );
-      roofPiece.body.setAngvel(
-        {
-          x: (row - 1.5) * 0.18 * destructionSpeed,
-          y: spread * 1.8 * destructionSpeed,
-          z: (column - 3.5) * 0.08 * destructionSpeed,
-        },
-        true,
-      );
-    }
-  }
+  roofSlab.mesh.userData.roofCollapseDebris = true;
+  roofSlab.mesh.userData.maxRoofCollapseY = center.y + 0.38;
+  roofSlab.mesh.userData.replayFace = info.face;
+  roofSlab.body.setGravityScale(2.15, true);
+  roofSlab.body.setLinearDamping(0.72);
+  roofSlab.body.setAngularDamping(1.6);
+  roofSlab.body.setLinvel(
+    {
+      x: baseVelocity.x * 0.06,
+      y: Math.min(-1.65, baseVelocity.y * 0.02 - 0.85 * destructionSpeed),
+      z: baseVelocity.z * 0.06,
+    },
+    true,
+  );
+  roofSlab.body.setAngvel(
+    {
+      x: info.face === 'roof-front' ? -0.05 * destructionSpeed : 0.05 * destructionSpeed,
+      y: 0,
+      z: 0,
+    },
+    true,
+  );
 
-  state.wallPiecesBroken += columns * rows;
+  state.wallPiecesBroken += 1;
   state.wallDeformations = state.wallPiecesBroken;
 }
 
@@ -2454,13 +3690,20 @@ function breakWallBlock(entity: PhysicsEntity, impulse: THREE.Vector3, detachOff
     return;
   }
 
+  if (entity.wallBlock && !isRoofFace(entity.wallBlock.face) && entity.wallBlock.row < physicalWallRows) {
+    getWallFaceStress(entity.wallBlock.face).lastBearingContactStep = simulationStep;
+  }
+
   if (entity.wallBlock && isRoofFace(entity.wallBlock.face)) {
     entity.stage = 2;
+    breakStructuralNodeBonds(entity.wallBlock);
     fragmentRoofPanel(entity, impulse, detachOffset);
     return;
   }
 
   if (entity.wallBlock) {
+    addDemolitionReplayEvent('wall-destroyed', `${entity.wallBlock.face} block destroyed`, entity.wallBlock.face, entity.damage);
+    breakStructuralNodeBonds(entity.wallBlock);
     revealPhysicalFacadeRow(entity.wallBlock.face, entity.wallBlock.row);
   }
 
@@ -2521,8 +3764,127 @@ function fragmentBrokenWallBlock(entity: PhysicsEntity, impulse: THREE.Vector3, 
     return;
   }
 
-  removeEntityFromWorld(entity);
+  releaseWallBlockAsVisibleDebris(entity, impulse, detachOffset);
   state.wallDeformations = state.wallPiecesBroken;
+}
+
+function releaseWallBlockAsVisibleDebris(
+  entity: PhysicsEntity,
+  impulse: THREE.Vector3,
+  detachOffset?: THREE.Vector3,
+  retainWallBlockInfo = false,
+): void {
+  const retainedWallBlock = entity.wallBlock;
+
+  if (entity.wallBlock) {
+    breakStructuralNodeBonds(entity.wallBlock);
+  }
+
+  wallBlocks = wallBlocks.filter((candidate) => candidate !== entity);
+  entity.wallBlock = retainWallBlockInfo ? retainedWallBlock : undefined;
+  entity.mesh.userData.visualBrickCount = Math.max(
+    1,
+    Number(entity.mesh.userData.visualBrickCount ?? 0),
+    Number(entity.mesh.userData.intactBrickVisualCount ?? 0),
+  );
+  entity.mesh.userData.intactBrickVisual = false;
+  entity.mesh.userData.intactBrickVisualCount = 0;
+  entity.createdStep = simulationStep;
+  entity.settleCandidateSteps = 0;
+
+  if (retainWallBlockInfo && retainedWallBlock && !entity.body.isDynamic()) {
+    applyWallBlockVisualDeformation(entity);
+    entity.mesh.updateMatrixWorld(true);
+    const visualPosition = entity.mesh.getWorldPosition(new THREE.Vector3());
+    const visualRotation = entity.mesh.getWorldQuaternion(new THREE.Quaternion());
+
+    entity.body.setTranslation(
+      {
+        x: visualPosition.x,
+        y: Math.max(entity.halfExtents.y, visualPosition.y),
+        z: visualPosition.z,
+      },
+      true,
+    );
+    entity.body.setRotation(
+      {
+        w: visualRotation.w,
+        x: visualRotation.x,
+        y: visualRotation.y,
+        z: visualRotation.z,
+      },
+      true,
+    );
+  }
+
+  replaceFixedWithDynamic(entity, impulse);
+  entity.kind = 'debris';
+
+  if (detachOffset) {
+    const position = entity.body.translation();
+
+    entity.body.setTranslation(
+      {
+        x: position.x + detachOffset.x,
+        y: Math.max(entity.halfExtents.y, position.y + detachOffset.y),
+        z: position.z + detachOffset.z,
+      },
+      true,
+    );
+  }
+
+  const velocity = entity.body.linvel();
+  const fall = impulse.lengthSq() > 0.01 ? impulse.clone().normalize() : new THREE.Vector3(0, -1, 0);
+  const structuralCollapseBoost = entity.mesh.userData.structuralCollapseDebris ? 1.55 : 1;
+
+  entity.body.setGravityScale(1.18, true);
+  entity.body.setLinvel(
+    {
+      x: velocity.x + fall.x * 0.65 * structuralCollapseBoost,
+      y: Math.min(velocity.y, entity.mesh.userData.structuralCollapseDebris ? -0.82 : -0.55),
+      z: velocity.z + fall.z * 0.65 * structuralCollapseBoost,
+    },
+    true,
+  );
+  entity.body.setAngvel(
+    {
+      x: -fall.z * 0.45 * structuralCollapseBoost,
+      y: fall.x * 0.18,
+      z: fall.x * 0.45 * structuralCollapseBoost,
+    },
+    true,
+  );
+  structuralDirty = true;
+}
+
+function releaseWallBlockForStructuralCollapse(entity: PhysicsEntity, impulse: THREE.Vector3, detachOffset?: THREE.Vector3): boolean {
+  if (!entity.wallBlock || entity.stage >= 2 || entity.body.isDynamic()) {
+    return false;
+  }
+
+  const info = entity.wallBlock;
+  const featureKind = getHouseFeatureKind(info.face, info.row, info.column);
+
+  revealPhysicalFacadeRow(info.face, info.row);
+
+  if (featureKind === 'door') {
+    spawnDoorPanel(entity, impulse);
+  } else if (featureKind === 'window') {
+    spawnGlassShatter(entity, featureKind, impulse);
+  }
+
+  entity.stage = 2;
+  state.wallPiecesBroken += 1;
+  state.wallDeformations = state.wallPiecesBroken;
+  state.wallBreaches = 1;
+  entity.mesh.userData.structuralCollapseDebris = true;
+  entity.mesh.userData.structuralCollapseFace = info.face;
+  entity.mesh.userData.replayFace = info.face;
+  addDemolitionReplayEvent('wall-detached', `${info.face} detached`, info.face, entity.damage);
+  releaseWallBlockAsVisibleDebris(entity, impulse, detachOffset, true);
+  entity.body.setAngularDamping(3.4);
+  entity.body.setLinearDamping(0.72);
+  return true;
 }
 
 function replaceWallBlockWithIndependentBrickBodies(
@@ -2544,24 +3906,22 @@ function replaceWallBlockWithIndependentBrickBodies(
   const rotation = entity.body.rotation();
   const quaternion = new THREE.Quaternion(rotation.x, rotation.y, rotation.z, rotation.w);
   const lengthAxis: 'x' | 'z' = entity.halfExtents.x >= entity.halfExtents.z ? 'x' : 'z';
-  const length = entity.halfExtents[lengthAxis] * 2;
-  const height = entity.halfExtents.y * 2;
-  const depth = (lengthAxis === 'x' ? entity.halfExtents.z : entity.halfExtents.x) * 2;
-  const rowLimit = debrisPressure > 0.65 ? 1 : debrisPressure > 0.38 ? 2 : 3;
-  const columnLimit = debrisPressure > 0.65 ? 2 : debrisPressure > 0.38 ? 3 : 4;
-  const rows = Math.max(1, Math.min(rowLimit, Math.round(height / masonryBrickHeight)));
-  const columns = Math.max(2, Math.min(columnLimit, Math.round(length / masonryBrickLength)));
-  const requestedCount = rows * columns;
-  const maxExtra = Math.max(0, Math.floor(maxLiveDynamicDebris * 0.82 - dynamicDebrisCount));
+  const sourceCenter = new THREE.Vector3(position.x, position.y, position.z);
+  const brickCells = collectWorldBrickGridCells(entity.halfExtents, sourceCenter);
+  const requestedCount = brickCells.length;
+  const maxExtra = Math.max(0, Math.floor(maxLiveDynamicDebris * (force ? 1.1 : 0.82) - dynamicDebrisCount));
+  const allowedCount = requestedCount;
 
-  if ((!force && requestedCount > maxExtra) || (force && maxExtra <= 0)) {
+  if (requestedCount <= 0 || requestedCount > maxExtra) {
     return false;
   }
+
+  const selectedBrickCells = brickCells.slice(0, allowedCount);
 
   const right = new THREE.Vector3(1, 0, 0).applyQuaternion(quaternion);
   const up = new THREE.Vector3(0, 1, 0).applyQuaternion(quaternion);
   const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(quaternion);
-  const center = new THREE.Vector3(position.x, position.y, position.z).add(detachOffset ?? new THREE.Vector3());
+  const center = sourceCenter.clone().add(detachOffset ?? new THREE.Vector3());
   const push = impulse.clone();
 
   if (push.lengthSq() < 0.01) {
@@ -2569,76 +3929,59 @@ function replaceWallBlockWithIndependentBrickBodies(
   }
   push.normalize();
 
-  const cellLength = length / columns;
-  const cellHeight = height / rows;
-  const mortarGap = 0.12;
   const baseVelocity = entity.body.isDynamic() ? entity.body.linvel() : { x: 0, y: 0, z: 0 };
   const destructionSpeed = getDestructionSpeed();
-  const sourceMass = Math.max(0.2, entity.mass / requestedCount);
+  const sourceMass = Math.max(0.2, entity.mass / allowedCount);
   const sourceName = entity.name;
 
   removeEntityFromWorld(entity);
-  state.wallPiecesBroken += Math.max(0, requestedCount - 1);
+  state.wallPiecesBroken += Math.max(0, allowedCount - 1);
   state.wallBreaches = 1;
 
-  for (let row = 0; row < rows; row += 1) {
-    const rowOffset = row % 2 === 0 ? 0 : cellLength * 0.5;
+  selectedBrickCells.forEach((cell, index) => {
+    const seed = info.row * 211 + info.column * 67 + cell.row * 19 + cell.column * 31 + simulationStep;
+    const brickHalf = cell.scale.clone().multiplyScalar(0.5);
+    const local = lengthAxis === 'x'
+      ? right.clone().multiplyScalar(cell.localLengthCenter)
+      : forward.clone().multiplyScalar(cell.localLengthCenter);
+    const brickPosition = center.clone()
+      .add(local)
+      .addScaledVector(up, cell.localY);
+    const brickMaterialIndex =
+      (cell.row + cell.column + Math.floor(seededNoise(seed + 7) * rubbleBrickMaterials.length)) % rubbleBrickMaterials.length;
+    const brick = createDynamicBox(
+      `${sourceName}-independent-brick-${index}`,
+      'debris',
+      brickHalf,
+      brickPosition,
+      rubbleBrickMaterials[brickMaterialIndex] ?? materials.wall,
+      sourceMass,
+      quaternion,
+      0.38,
+      0.66,
+    );
+    const spread = cell.localLengthCenter * 0.018;
 
-    for (let column = 0; column < columns; column += 1) {
-      const edgeTrim = (column === 0 || column === columns - 1) && row % 2 === 1 ? 0.5 : 1;
-      const brickLength = Math.max(0.18, cellLength * edgeTrim - mortarGap);
-      const brickHeight = Math.max(0.14, cellHeight - mortarGap);
-      const seed = info.row * 211 + info.column * 67 + row * 19 + column * 31 + simulationStep;
-      const chip = 0.92 + seededNoise(seed) * 0.1;
-      const brickHalf = lengthAxis === 'x'
-        ? new THREE.Vector3(brickLength * 0.5 * chip, brickHeight * 0.5, depth * 0.48)
-        : new THREE.Vector3(depth * 0.48, brickHeight * 0.5, brickLength * 0.5 * chip);
-      const lengthCenter = -length * 0.5 + cellLength * 0.5 + column * cellLength + rowOffset;
-      const wrappedLengthCenter = THREE.MathUtils.clamp(
-        lengthCenter > length * 0.5 ? lengthCenter - length : lengthCenter,
-        -length * 0.5 + brickLength * 0.5,
-        length * 0.5 - brickLength * 0.5,
-      );
-      const local = lengthAxis === 'x'
-        ? right.clone().multiplyScalar(wrappedLengthCenter)
-        : forward.clone().multiplyScalar(wrappedLengthCenter);
-      const brickPosition = center.clone()
-        .add(local)
-        .addScaledVector(up, -height * 0.5 + cellHeight * 0.5 + row * cellHeight);
-      const brickMaterialIndex =
-        (row + column + Math.floor(seededNoise(seed + 7) * rubbleBrickMaterials.length)) % rubbleBrickMaterials.length;
-      const brick = createDynamicBox(
-        `${sourceName}-independent-brick-${row}-${column}`,
-        'debris',
-        brickHalf,
-        brickPosition,
-        rubbleBrickMaterials[brickMaterialIndex] ?? materials.wall,
-        sourceMass,
-        quaternion,
-        1.18,
-        1.42,
-      );
-      const spread = (column - (columns - 1) / 2) * 0.035;
-
-      brick.mesh.userData.visualBrickCount = 1;
-      brick.body.setLinvel(
-        {
-          x: baseVelocity.x * 0.35 + push.x * (0.52 + row * 0.035) * destructionSpeed + right.x * spread,
-          y: baseVelocity.y * 0.18 + 0.08 - row * 0.015,
-          z: baseVelocity.z * 0.35 + push.z * (0.52 + row * 0.035) * destructionSpeed + right.z * spread,
-        },
-        true,
-      );
-      brick.body.setAngvel(
-        {
-          x: seededRange(seed + 1, -0.45, 0.45),
-          y: seededRange(seed + 2, -0.4, 0.4),
-          z: seededRange(seed + 3, -0.45, 0.45),
-        },
-        true,
-      );
-    }
-  }
+    brick.mesh.userData.visualBrickCount = 1;
+    brick.mesh.userData.replayFace = info.face;
+    brick.body.setGravityScale(1.35, true);
+    brick.body.setLinvel(
+      {
+        x: baseVelocity.x * 0.28 + push.x * (0.48 + info.row * 0.025) * destructionSpeed + right.x * spread,
+        y: Math.min(-0.95, baseVelocity.y * 0.12 - (0.85 + info.row * 0.05) * destructionSpeed),
+        z: baseVelocity.z * 0.28 + push.z * (0.48 + info.row * 0.025) * destructionSpeed + right.z * spread,
+      },
+      true,
+    );
+    brick.body.setAngvel(
+      {
+        x: seededRange(seed + 1, -0.22, 0.22),
+        y: seededRange(seed + 2, -0.18, 0.18),
+        z: seededRange(seed + 3, -0.22, 0.22),
+      },
+      true,
+    );
+  });
 
   return true;
 }
@@ -2648,17 +3991,97 @@ function getFaceLowerSupportRatio(face: HouseBlockFace): number {
     return 1;
   }
 
-  const blocks = wallBlocks.filter((block) => {
-    const info = block.wallBlock;
-    return info?.face === face && info.row < physicalWallRows;
-  });
+  const columnCount = getHouseFaceColumnCount(face);
+  let totalSlots = 0;
+  let standing = 0;
 
-  if (blocks.length === 0) {
+  for (let row = 0; row < physicalWallRows; row += 1) {
+    for (let column = 0; column < columnCount; column += 1) {
+      if (!isPhysicalWallBlock(face, row, column)) {
+        continue;
+      }
+
+      totalSlots += 1;
+      const block = getHouseBlock(face, row, column);
+
+      if (block && block.stage < 2 && !block.body.isDynamic()) {
+        standing += 1;
+      }
+    }
+  }
+
+  if (totalSlots === 0) {
     return 0;
   }
 
-  const standing = blocks.filter((block) => block.stage < 2 && !block.body.isDynamic()).length;
-  return standing / blocks.length;
+  return standing / totalSlots;
+}
+
+function getFaceFoundationSupportRatio(face: HouseBlockFace): number {
+  if (isRoofFace(face)) {
+    return 1;
+  }
+
+  const columnCount = getHouseFaceColumnCount(face);
+  let totalSlots = 0;
+  let standing = 0;
+
+  for (let column = 0; column < columnCount; column += 1) {
+    if (!isPhysicalWallBlock(face, 0, column)) {
+      continue;
+    }
+
+    totalSlots += 1;
+    const block = getHouseBlock(face, 0, column);
+
+    if (block && block.stage < 2 && !block.body.isDynamic()) {
+      standing += 1;
+    }
+  }
+
+  if (totalSlots === 0) {
+    return 0;
+  }
+
+  return standing / totalSlots;
+}
+
+function getFaceFoundationMissingRunRatio(face: HouseBlockFace): number {
+  if (isRoofFace(face)) {
+    return 0;
+  }
+
+  const columnCount = getHouseFaceColumnCount(face);
+  let totalSlots = 0;
+  let longestMissingRun = 0;
+  let currentMissingRun = 0;
+
+  for (let column = 0; column < columnCount; column += 1) {
+    if (!isPhysicalWallBlock(face, 0, column)) {
+      continue;
+    }
+
+    totalSlots += 1;
+    const block = getHouseBlock(face, 0, column);
+    const missing = !block || block.stage >= 2 || block.body.isDynamic();
+
+    if (missing) {
+      currentMissingRun += 1;
+      longestMissingRun = Math.max(longestMissingRun, currentMissingRun);
+    } else {
+      currentMissingRun = 0;
+    }
+  }
+
+  if (totalSlots === 0) {
+    return 0;
+  }
+
+  return longestMissingRun / totalSlots;
+}
+
+function getFoundationCollapseThreshold(face: HouseBlockFace): number {
+  return isRoofFace(face) ? 0 : 0.26;
 }
 
 function isFaceLaterallyUnstable(face: HouseBlockFace): boolean {
@@ -2672,24 +4095,748 @@ function isFaceLaterallyUnstable(face: HouseBlockFace): boolean {
   return lostWalls >= 3 && getFaceLowerSupportRatio(face) < 0.72;
 }
 
-function isHouseFaceBroadlyUndermined(face: HouseBlockFace, supportRatio = houseUpperFacadeReleaseSupportRatio): boolean {
-  return !isRoofFace(face) && (getFaceLowerSupportRatio(face) < supportRatio || isFaceLaterallyUnstable(face));
+function isHouseFaceBroadlyUndermined(face: HouseBlockFace, supportRatio = getSupportReleaseRatio()): boolean {
+  if (isRoofFace(face)) {
+    return false;
+  }
+
+  const foundationRatio = getFaceFoundationSupportRatio(face);
+  const foundationThreshold = getFoundationCollapseThreshold(face);
+
+  return (
+    getFaceLowerSupportRatio(face) < supportRatio ||
+    foundationRatio < foundationThreshold ||
+    isFaceLaterallyUnstable(face)
+  );
+}
+
+function getWallFaceStress(face: HouseBlockFace): WallFaceStress {
+  const existing = wallFaceStress.get(face);
+
+  if (existing) {
+    return existing;
+  }
+
+  const created: WallFaceStress = {
+    collapse: 0,
+    criticalBearingSteps: 0,
+    direction: 0,
+    foundationRatio: 1,
+    imbalance: 0,
+    lastBearingContactStep: -9999,
+    lean: 0,
+    supportRatio: 1,
+  };
+
+  wallFaceStress.set(face, created);
+  return created;
+}
+
+function getFaceLowerSupportImbalance(face: HouseBlockFace): Pick<WallFaceStress, 'direction' | 'imbalance' | 'supportRatio'> {
+  if (isRoofFace(face)) {
+    return { direction: 0, imbalance: 0, supportRatio: 1 };
+  }
+
+  const columnCount = getHouseFaceColumnCount(face);
+  let totalSlots = 0;
+  let standing = 0;
+  let signedStanding = 0;
+
+  for (let row = 0; row < physicalWallRows; row += 1) {
+    for (let column = 0; column < columnCount; column += 1) {
+      if (!isPhysicalWallBlock(face, row, column)) {
+        continue;
+      }
+
+      totalSlots += 1;
+      const block = getHouseBlock(face, row, column);
+
+      if (block && block.stage < 2 && !block.body.isDynamic()) {
+        const signedColumn = columnCount <= 1 ? 0 : (column / (columnCount - 1)) * 2 - 1;
+
+        standing += 1;
+        signedStanding += signedColumn;
+      }
+    }
+  }
+
+  if (totalSlots === 0 || standing === 0) {
+    return { direction: 0, imbalance: 0, supportRatio: 0 };
+  }
+
+  const supportRatio = standing / totalSlots;
+  const supportCenter = signedStanding / standing;
+  const direction = supportCenter > 0.04 ? -1 : supportCenter < -0.04 ? 1 : 0;
+  const imbalance = Math.abs(supportCenter) * (1 - supportRatio);
+
+  return { direction, imbalance, supportRatio };
+}
+
+function getFallbackLeanDirection(face: HouseBlockFace): number {
+  const columnCount = getHouseFaceColumnCount(face);
+  let standingSigned = 0;
+  let brokenSigned = 0;
+
+  for (let row = 0; row < physicalWallRows; row += 1) {
+    for (let column = 0; column < columnCount; column += 1) {
+      if (!isPhysicalWallBlock(face, row, column)) {
+        continue;
+      }
+
+      const signedColumn = columnCount <= 1 ? 0 : (column / (columnCount - 1)) * 2 - 1;
+      const block = getHouseBlock(face, row, column);
+
+      if (block && block.stage < 2 && !block.body.isDynamic()) {
+        standingSigned += signedColumn;
+      } else {
+        brokenSigned += signedColumn;
+      }
+    }
+  }
+
+  if (Math.abs(brokenSigned) > 0.01) {
+    return brokenSigned > 0 ? 1 : -1;
+  }
+
+  if (Math.abs(standingSigned) > 0.01) {
+    return standingSigned > 0 ? -1 : 1;
+  }
+
+  return face === 'back' || face === 'right' ? 1 : -1;
+}
+
+function updateWallGravitySag(): void {
+  const wallFaces: HouseBlockFace[] = ['front', 'back', 'left', 'right'];
+
+  for (const face of wallFaces) {
+    const stress = getWallFaceStress(face);
+    const support = getFaceLowerSupportImbalance(face);
+    const foundationRatio = getFaceFoundationSupportRatio(face);
+    const criticalBearingFailure = isWallFaceCriticallyBearingFailed(face);
+    const foundationIsCatastrophic = foundationRatio < getFoundationCollapseThreshold(face);
+    const effectiveSupportRatio = foundationIsCatastrophic
+      ? Math.min(support.supportRatio, foundationRatio * 1.25)
+      : support.supportRatio;
+    const imbalanceLean = support.supportRatio < 0.62 && support.imbalance > 0.1
+      ? THREE.MathUtils.clamp((0.62 - support.supportRatio) * 1.15 + support.imbalance * 0.95, 0, 1)
+      : 0;
+    const foundationLean = effectiveSupportRatio < 0.62
+      ? THREE.MathUtils.clamp((0.62 - effectiveSupportRatio) * 1.45 + Math.max(0, 0.34 - foundationRatio) * 1.8, 0, 1)
+      : 0;
+    const targetLean = criticalBearingFailure ? 1 : Math.max(imbalanceLean, foundationLean);
+
+    if (criticalBearingFailure) {
+      stress.direction = support.direction || stress.direction || getFallbackLeanDirection(face);
+      const bearingContactIsQuiet = simulationStep - stress.lastBearingContactStep > 24;
+      stress.criticalBearingSteps = bearingContactIsQuiet ? stress.criticalBearingSteps + 1 : 0;
+    } else {
+      stress.criticalBearingSteps = 0;
+    }
+
+    if (!criticalBearingFailure && imbalanceLean > 0) {
+      stress.direction = support.direction || stress.direction || getFallbackLeanDirection(face);
+    } else if (!criticalBearingFailure && foundationLean > 0 && stress.direction === 0) {
+      stress.direction = getFallbackLeanDirection(face);
+    }
+    stress.foundationRatio = foundationRatio;
+    stress.imbalance = support.imbalance;
+    stress.supportRatio = effectiveSupportRatio;
+    const criticalLeanSpeed = getCriticalBearingLeanSpeed();
+    const leanDamping = criticalBearingFailure ? criticalLeanSpeed : targetLean > stress.lean ? 2.4 : 4.8;
+    const collapseRate = criticalBearingFailure ? criticalLeanSpeed * 0.92 : 0.75 + (1 - effectiveSupportRatio) * 0.8;
+
+    stress.lean = THREE.MathUtils.damp(stress.lean, targetLean, leanDamping, fixedDt);
+    stress.collapse = THREE.MathUtils.clamp(
+      stress.collapse + Math.max(0, stress.lean - (criticalBearingFailure ? 0.08 : 0.35)) * fixedDt * collapseRate,
+      0,
+      1,
+    );
+  }
+
+  for (const block of wallBlocks) {
+    const info = block.wallBlock;
+
+    if (!info || isRoofFace(info.face)) {
+      continue;
+    }
+
+    const stress = getWallFaceStress(info.face);
+    const heightFactor = wallBlockRows <= 1 ? 0 : info.row / (wallBlockRows - 1);
+    const columnCount = getHouseFaceColumnCount(info.face);
+    const signedColumn = columnCount <= 1 ? 0 : (info.column / (columnCount - 1)) * 2 - 1;
+    const activeDirection = stress.direction || getFallbackLeanDirection(info.face);
+    const weakSideFactor = THREE.MathUtils.clamp(0.58 + -signedColumn * activeDirection * 0.22, 0.34, 0.92);
+    const targetDownSag = -stress.lean * (0.035 + heightFactor * 0.34) * weakSideFactor;
+    const sagDamping = stress.lean > 0.02 ? 5.2 : 8.5;
+
+    info.sag.set(
+      THREE.MathUtils.damp(info.sag.x, 0, sagDamping, fixedDt),
+      THREE.MathUtils.damp(info.sag.y, targetDownSag, sagDamping, fixedDt),
+      THREE.MathUtils.damp(info.sag.z, 0, sagDamping, fixedDt),
+    );
+
+    if (block.stage < 2 && !block.body.isDynamic()) {
+      applyWallBlockVisualDeformation(block);
+    }
+  }
+}
+
+function hasActiveWallFaceStress(): boolean {
+  const wallFaces: HouseBlockFace[] = ['front', 'back', 'left', 'right'];
+
+  return wallFaces.some((face) => {
+    const stress = getWallFaceStress(face);
+    const support = getFaceLowerSupportImbalance(face);
+    const foundationRatio = getFaceFoundationSupportRatio(face);
+    const effectiveSupportRatio = foundationRatio < getFoundationCollapseThreshold(face)
+      ? Math.min(support.supportRatio, foundationRatio * 1.25)
+      : support.supportRatio;
+
+    return stress.lean > 0.01 || effectiveSupportRatio < 0.62 || (support.supportRatio < 0.62 && support.imbalance > 0.1);
+  });
+}
+
+function releaseFaceCollapseBand(face: HouseBlockFace, releaseBudget: number, rowSpan: number, collapsePower: number): number {
+  const columnCount = getHouseFaceColumnCount(face);
+  const fallDirection = getFaceLowResistanceDirection(face);
+  const includeFoundationRow = rowSpan >= wallBlockRows;
+  const candidates = wallBlocks
+    .filter((block) => {
+      const info = block.wallBlock;
+      return info?.face === face && info.row >= (includeFoundationRow ? 0 : 1) && block.stage < 2 && !block.body.isDynamic();
+    });
+
+  if (candidates.length === 0) {
+    return 0;
+  }
+
+  const highestRow = Math.max(...candidates.map((block) => block.wallBlock?.row ?? -1));
+  const lowestReleasedRow = Math.max(includeFoundationRow ? 0 : 1, highestRow - Math.max(0, rowSpan - 1));
+  const coherentBudget = Math.max(releaseBudget, columnCount * rowSpan);
+  const selected = candidates
+    .filter((block) => {
+      const row = block.wallBlock?.row ?? -1;
+      return row <= highestRow && row >= lowestReleasedRow;
+    })
+    .sort((a, b) => {
+      const aInfo = a.wallBlock;
+      const bInfo = b.wallBlock;
+
+      if (!aInfo || !bInfo) {
+        return 0;
+      }
+
+      if (aInfo.row !== bInfo.row) {
+        return bInfo.row - aInfo.row;
+      }
+
+      return aInfo.column - bInfo.column;
+    })
+    .slice(0, coherentBudget);
+  let released = 0;
+
+  for (const block of selected) {
+    const info = block.wallBlock;
+
+    if (!info) {
+      continue;
+    }
+
+    const lateralImpulse = (info.column - (columnCount - 1) / 2) * 0.012;
+    const rowFactor = info.row / Math.max(1, wallBlockRows - 1);
+    const impulse = fallDirection.clone().multiplyScalar(collapsePower + rowFactor * 0.72).setY(-0.58 - rowFactor * 0.22);
+    const detach = fallDirection.clone().multiplyScalar(0.18 + rowFactor * 0.16).setY(-0.1);
+
+    if (face === 'front' || face === 'back') {
+      impulse.x += lateralImpulse;
+      detach.x += lateralImpulse * 0.2;
+    } else {
+      impulse.z += lateralImpulse;
+      detach.z += lateralImpulse * 0.2;
+    }
+
+    if (releaseWallBlockForStructuralCollapse(block, impulse, detach)) {
+      state.structuralWallReleases += 1;
+      released += 1;
+    }
+  }
+
+  return released;
+}
+
+function isWallFaceFlatFallReady(face: HouseBlockFace): boolean {
+  const stress = getWallFaceStress(face);
+  const forwardPanelLean = Math.abs(getWallFaceForwardPanelLeanAngle(face));
+  const sidePanelLean = Math.abs(getWallFacePanelLeanAngle(face));
+
+  return (
+    (forwardPanelLean > 1.48 || sidePanelLean > 1.06) &&
+    stress.lean > 0.68 &&
+    stress.supportRatio < 0.72
+  );
+}
+
+function isWallFaceCriticallyBearingFailed(face: HouseBlockFace): boolean {
+  if (isRoofFace(face)) {
+    return false;
+  }
+
+  const foundationRatio = getFaceFoundationSupportRatio(face);
+  const lowerSupportRatio = getFaceLowerSupportRatio(face);
+  const missingRunRatio = getFaceFoundationMissingRunRatio(face);
+
+  return (
+    foundationRatio <= 0.34 ||
+    missingRunRatio >= 0.62 ||
+    (foundationRatio < getFoundationCollapseThreshold(face) && lowerSupportRatio < 0.32)
+  );
+}
+
+function isBulldozerBlockingFallingFace(face: HouseBlockFace): boolean {
+  if (!bulldozer || !blade) {
+    return false;
+  }
+
+  const forwardPanelLean = Math.abs(getWallFaceForwardPanelLeanAngle(face));
+  const sidePanelLean = Math.abs(getWallFacePanelLeanAngle(face));
+  const panelLean = Math.max(forwardPanelLean, sidePanelLean);
+
+  if (panelLean < 1.28) {
+    return false;
+  }
+
+  const fallDirection = getFaceLowResistanceDirection(face);
+  const dozerPosition = bulldozer.body.translation();
+  const dozerForward = getBodyForward(bulldozer.body, new THREE.Vector3()).clone();
+  const dozerRight = getBodyRight(bulldozer.body, new THREE.Vector3()).clone();
+  const bladePosition = getBladeWorldPosition(new THREE.Vector3());
+  const obstacles = [
+    {
+      center: new THREE.Vector3(dozerPosition.x, dozerPosition.y, dozerPosition.z),
+      half: bulldozer.halfExtents,
+    },
+    {
+      center: new THREE.Vector3(dozerPosition.x, dozerPosition.y, dozerPosition.z)
+        .addScaledVector(dozerRight, cabLocalOffset.x)
+        .addScaledVector(dozerForward, -cabLocalOffset.z)
+        .setY(dozerPosition.y + cabLocalOffset.y),
+      half: cabHalf,
+    },
+    {
+      center: bladePosition,
+      half: bladeHalf,
+    },
+  ];
+  const projectedReach = Math.sin(panelLean) * solidWallHeight + 1.2;
+  const faceHalfSpan = face === 'front' || face === 'back' ? solidWallWidth / 2 : houseDepth / 2;
+  const facePlane = face === 'front'
+    ? solidWallZ
+    : face === 'back'
+      ? solidWallZ - houseDepth
+      : face === 'left'
+        ? -solidWallWidth / 2 - solidWallThickness / 2
+        : solidWallWidth / 2 + solidWallThickness / 2;
+
+  return obstacles.some(({ center, half }) => {
+    const horizontalRadius = Math.max(half.x, half.z) + 0.85;
+    const verticalTop = center.y + half.y;
+
+    if (verticalTop < 0.35) {
+      return false;
+    }
+
+    if (face === 'front' || face === 'back') {
+      const outwardDistance = (center.z - facePlane) * fallDirection.z;
+
+      return (
+        outwardDistance > -horizontalRadius &&
+        outwardDistance < projectedReach + horizontalRadius &&
+        Math.abs(center.x) < faceHalfSpan + horizontalRadius
+      );
+    }
+
+    const outwardDistance = (center.x - facePlane) * fallDirection.x;
+
+    return (
+      outwardDistance > -horizontalRadius &&
+      outwardDistance < projectedReach + horizontalRadius &&
+      Math.abs(center.z - houseCenterZ) < faceHalfSpan + horizontalRadius
+    );
+  });
+}
+
+function isCriticalBearingPanelReleaseReady(face: HouseBlockFace): boolean {
+  if (!isWallFaceCriticallyBearingFailed(face)) {
+    return true;
+  }
+
+  const stress = getWallFaceStress(face);
+  const forwardPanelLean = Math.abs(getWallFaceForwardPanelLeanAngle(face));
+  const sidePanelLean = Math.abs(getWallFacePanelLeanAngle(face));
+  const delayFrames = getCriticalBearingDelayFrames();
+  const bulldozerIsBlockingFall = isBulldozerBlockingFallingFace(face);
+  const criticalLeanVisible = stress.criticalBearingSteps > delayFrames;
+  const criticalPanelNearFloor =
+    forwardPanelLean > 1.48 ||
+    sidePanelLean > 1.06 ||
+    stress.criticalBearingSteps > delayFrames + 1000;
+
+  return criticalLeanVisible && (bulldozerIsBlockingFall || criticalPanelNearFloor);
+}
+
+function releaseWallFaceToFallFlat(face: HouseBlockFace, collapsePower: number): number {
+  const fallDirection = getFaceLowResistanceDirection(face);
+  const columnCount = getHouseFaceColumnCount(face);
+  const candidates = wallBlocks
+    .filter((block) => {
+      const info = block.wallBlock;
+      return info?.face === face && block.stage < 2 && !block.body.isDynamic();
+    })
+    .sort((a, b) => {
+      const aInfo = a.wallBlock;
+      const bInfo = b.wallBlock;
+
+      if (!aInfo || !bInfo) {
+        return 0;
+      }
+
+      if (aInfo.row !== bInfo.row) {
+        return bInfo.row - aInfo.row;
+      }
+
+      return aInfo.column - bInfo.column;
+    });
+  let released = 0;
+
+  for (const block of candidates) {
+    const info = block.wallBlock;
+
+    if (!info) {
+      continue;
+    }
+
+    const rowFactor = info.row / Math.max(1, wallBlockRows - 1);
+    const lateralImpulse = (info.column - (columnCount - 1) / 2) * 0.01;
+    const outwardSpeed = collapsePower + rowFactor * 1.35;
+    const impulse = fallDirection.clone().multiplyScalar(outwardSpeed).setY(-2.8 - rowFactor * 1.2);
+    const detach = fallDirection.clone().multiplyScalar(0.36 + rowFactor * 0.26).setY(-0.22);
+
+    if (face === 'front' || face === 'back') {
+      impulse.x += lateralImpulse;
+      detach.x += lateralImpulse * 0.2;
+    } else {
+      impulse.z += lateralImpulse;
+      detach.z += lateralImpulse * 0.2;
+    }
+
+    if (releaseWallBlockForStructuralCollapse(block, impulse, detach)) {
+      const spin = 0.72 + rowFactor * 0.18;
+      block.body.setGravityScale(1.55, true);
+      block.body.setLinvel(
+        {
+          x: fallDirection.x * (2.5 + rowFactor * 1.1),
+          y: -3.4 - rowFactor * 1.1,
+          z: fallDirection.z * (2.5 + rowFactor * 1.1),
+        },
+        true,
+      );
+      block.body.setAngvel(
+        {
+          x: -fallDirection.z * spin,
+          y: 0,
+          z: fallDirection.x * spin,
+        },
+        true,
+      );
+      state.structuralWallReleases += 1;
+      released += 1;
+    }
+  }
+
+  return released;
+}
+
+function releaseLeaningWallBlocks(releaseBudget: number): number {
+  if (releaseBudget <= 0) {
+    return 0;
+  }
+
+  const wallFaces: HouseBlockFace[] = ['front', 'back', 'left', 'right'];
+  let released = 0;
+
+  for (const face of wallFaces) {
+    if (released >= releaseBudget) {
+      break;
+    }
+
+    const stress = getWallFaceStress(face);
+    const forwardPanelLean = Math.abs(getWallFaceForwardPanelLeanAngle(face));
+    const sidePanelLean = Math.abs(getWallFacePanelLeanAngle(face));
+    const panelTipOverReady =
+      (forwardPanelLean > 1.48 || sidePanelLean > 1.06) &&
+      stress.lean > 0.72 &&
+      stress.supportRatio < 0.56;
+
+    if (isWallFaceFlatFallReady(face)) {
+      const flatReleased = releaseWallFaceToFallFlat(face, 4.1 + Math.max(forwardPanelLean, sidePanelLean));
+
+      if (flatReleased > 0) {
+        stress.collapse = 0;
+        released += flatReleased;
+        continue;
+      }
+    }
+
+    if (isWallFaceCriticallyBearingFailed(face) && !isCriticalBearingPanelReleaseReady(face)) {
+      continue;
+    }
+
+    if (!panelTipOverReady && (stress.lean < 0.72 || stress.collapse < 0.62 || stress.supportRatio > 0.58)) {
+      continue;
+    }
+
+    const rowSpan = panelTipOverReady ? wallBlockRows : stress.collapse > 0.7 ? 3 : 2;
+    const bandReleased = releaseFaceCollapseBand(
+      face,
+      releaseBudget - released,
+      rowSpan,
+      panelTipOverReady ? 2.8 + Math.max(forwardPanelLean, sidePanelLean) : 1.2 + stress.collapse * 1.45,
+    );
+
+    if (bandReleased > 0) {
+      stress.collapse = Math.max(0, stress.collapse - 0.06 * bandReleased);
+      released += bandReleased;
+    }
+  }
+
+  return released;
+}
+
+function getWallInwardSign(face: HouseBlockFace): number {
+  return face === 'front' || face === 'left' ? -1 : 1;
+}
+
+function getWallFacePanelLeanAngle(face: HouseBlockFace): number {
+  if (isRoofFace(face)) {
+    return 0;
+  }
+
+  const stress = getWallFaceStress(face);
+
+  if (stress.lean < 0.02) {
+    return 0;
+  }
+
+  const activeDirection = stress.direction || getFallbackLeanDirection(face);
+  const supportLoss = THREE.MathUtils.clamp(0.62 - stress.supportRatio, 0, 0.62);
+  const angleMagnitude = THREE.MathUtils.clamp(
+    stress.lean * (0.1 + supportLoss * 0.8 + stress.collapse * 0.46),
+    0,
+    1.08,
+  );
+
+  return face === 'front' || face === 'back'
+    ? -activeDirection * angleMagnitude
+    : activeDirection * angleMagnitude;
+}
+
+function getWallFaceForwardPanelLeanAngle(face: HouseBlockFace): number {
+  if (isRoofFace(face)) {
+    return 0;
+  }
+
+  const stress = getWallFaceStress(face);
+
+  if (stress.lean < 0.02) {
+    return 0;
+  }
+
+  const supportLoss = THREE.MathUtils.clamp(0.62 - stress.supportRatio, 0, 0.62);
+  const angleMagnitude = THREE.MathUtils.clamp(
+    stress.lean * (0.12 + supportLoss * 0.92 + stress.collapse * 1.08),
+    0,
+    1.5,
+  );
+  const fallDirection = getFaceLowResistanceDirection(face);
+
+  if (face === 'front' || face === 'back') {
+    return fallDirection.z * angleMagnitude;
+  }
+
+  return -fallDirection.x * angleMagnitude;
+}
+
+function getWallFaceLeanPivot(entity: PhysicsEntity, info: WallBlockInfo): THREE.Vector3 {
+  const blockHeight = Math.max(0.1, entity.halfExtents.y * 2);
+  const bottomY = info.home.y - info.row * blockHeight - entity.halfExtents.y;
+
+  if (info.face === 'front' || info.face === 'back') {
+    return new THREE.Vector3(0, bottomY, info.home.z);
+  }
+
+  return new THREE.Vector3(info.home.x, bottomY, houseCenterZ);
+}
+
+function applyWallBlockVisualDeformation(entity: PhysicsEntity): void {
+  const info = entity.wallBlock;
+
+  if (!info || isRoofFace(info.face)) {
+    return;
+  }
+
+  const normalBulge = info.face === 'front' || info.face === 'back' ? info.bulge.z : info.bulge.x;
+  const sideBulge = info.face === 'front' || info.face === 'back' ? info.bulge.x : info.bulge.z;
+  const sag = Math.max(0, -info.sag.y);
+  const bow = Math.min(0.18, Math.abs(normalBulge) * 0.12);
+  const shear = THREE.MathUtils.clamp(sideBulge * 0.01, -0.035, 0.035);
+  const sagCrush = Math.min(0.08, sag * 0.018);
+  const sagBow = Math.min(0.06, sag * 0.035);
+  const bodyRotation = entity.body.rotation();
+  const baseRotation = new THREE.Euler().setFromQuaternion(
+    tempQuat.set(bodyRotation.x, bodyRotation.y, bodyRotation.z, bodyRotation.w),
+  );
+  const inwardSign = getWallInwardSign(info.face);
+  const inwardDent = THREE.MathUtils.clamp(normalBulge * inwardSign, 0, 0.58);
+  const outwardDent = THREE.MathUtils.clamp(-normalBulge * inwardSign, 0, 0.025);
+  const visualOffset = inwardSign * inwardDent - inwardSign * outwardDent;
+  const panelLeanAngle = getWallFacePanelLeanAngle(info.face);
+  const forwardLeanAngle = getWallFaceForwardPanelLeanAngle(info.face);
+  const panelLeanAxis = info.face === 'front' || info.face === 'back'
+    ? new THREE.Vector3(0, 0, 1)
+    : new THREE.Vector3(1, 0, 0);
+  const forwardLeanAxis = info.face === 'front' || info.face === 'back'
+    ? new THREE.Vector3(1, 0, 0)
+    : new THREE.Vector3(0, 0, 1);
+  const pivot = getWallFaceLeanPivot(entity, info);
+  const panelPosition = info.home.clone()
+    .sub(pivot)
+    .applyAxisAngle(forwardLeanAxis, forwardLeanAngle)
+    .applyAxisAngle(panelLeanAxis, panelLeanAngle)
+    .add(pivot);
+
+  entity.mesh.scale.set(1, 1, 1);
+  entity.mesh.scale.y = 1 - sagCrush;
+  entity.mesh.position.copy(panelPosition);
+  entity.mesh.position.y += info.sag.y;
+
+  if (info.face === 'front' || info.face === 'back') {
+    entity.mesh.position.z += visualOffset;
+    entity.mesh.scale.z = 1 + bow + sagBow + inwardDent * 0.12;
+    entity.mesh.rotation.set(
+      baseRotation.x + THREE.MathUtils.clamp(forwardLeanAngle, -1.5, 1.5),
+      baseRotation.y + THREE.MathUtils.clamp(normalBulge * 0.055 + shear, -0.1, 0.1),
+      baseRotation.z + THREE.MathUtils.clamp(panelLeanAngle + sideBulge * 0.008 - info.sag.y * 0.01, -1.08, 1.08),
+    );
+  } else {
+    entity.mesh.position.x += visualOffset;
+    entity.mesh.scale.x = 1 + bow + sagBow + inwardDent * 0.12;
+    entity.mesh.rotation.set(
+      baseRotation.x + THREE.MathUtils.clamp(-info.sag.y * 0.01 + panelLeanAngle, -1.08, 1.08),
+      baseRotation.y,
+      baseRotation.z + THREE.MathUtils.clamp(forwardLeanAngle - normalBulge * 0.055 + shear, -1.5, 1.5),
+    );
+  }
 }
 
 function releaseUnsupportedWallBlocks(): void {
   const wallFaces: HouseBlockFace[] = ['front', 'back', 'left', 'right'];
+  const supportSnapshot = updateStructuralSupportGraph();
+  let releasedThisStep = 0;
 
   for (const face of wallFaces) {
+    if (releasedThisStep >= maxUnsupportedWallBlockReleasesPerStep) {
+      break;
+    }
+
     const columnCount = getHouseFaceColumnCount(face);
     const fallDirection = getFaceFallDirection(face);
     const faceIsLaterallyUnstable = isFaceLaterallyUnstable(face);
+    const faceIsBroadlyUndermined = isHouseFaceBroadlyUndermined(face);
+    const foundationRatio = getFaceFoundationSupportRatio(face);
+    const faceFoundationUndermined = foundationRatio < getFoundationCollapseThreshold(face);
+    const criticalBearingFailure = isWallFaceCriticallyBearingFailed(face);
+    const stress = getWallFaceStress(face);
+    const forwardPanelLean = Math.abs(getWallFaceForwardPanelLeanAngle(face));
+    const sidePanelLean = Math.abs(getWallFacePanelLeanAngle(face));
+    const panelTipOverReady =
+      (forwardPanelLean > 0.34 || sidePanelLean > 0.38) &&
+      stress.lean > 0.72 &&
+      stress.supportRatio < 0.56;
+    const panelMustFallFlat = isWallFaceFlatFallReady(face);
+    const broadCollapseReady =
+      !faceFoundationUndermined ||
+      panelTipOverReady ||
+      (stress.collapse > 0.72 && stress.lean > 0.96);
+
+    if (criticalBearingFailure) {
+      stress.foundationRatio = foundationRatio;
+      stress.supportRatio = Math.min(stress.supportRatio, foundationRatio * 1.25);
+      stress.direction = stress.direction || getFallbackLeanDirection(face);
+
+      if (!isCriticalBearingPanelReleaseReady(face)) {
+        continue;
+      }
+
+      stress.collapse = 1;
+      stress.lean = Math.max(stress.lean, 0.9);
+
+      const flatReleased = releaseWallFaceToFallFlat(face, 4.9);
+
+      releasedThisStep += flatReleased;
+      if (flatReleased > 0) {
+        continue;
+      }
+    }
+
+    if (panelMustFallFlat) {
+      const flatReleased = releaseWallFaceToFallFlat(face, 4.1 + Math.max(forwardPanelLean, sidePanelLean));
+
+      releasedThisStep += flatReleased;
+      if (flatReleased > 0) {
+        stress.collapse = 0;
+        continue;
+      }
+    }
+
+    if (panelTipOverReady || ((faceIsLaterallyUnstable || faceIsBroadlyUndermined) && broadCollapseReady)) {
+      const rowSpan = panelTipOverReady ? wallBlockRows : faceFoundationUndermined || stress.collapse > 0.72 ? 3 : 2;
+      const bandReleased = releaseFaceCollapseBand(
+        face,
+        maxUnsupportedWallBlockReleasesPerStep - releasedThisStep,
+        rowSpan,
+        panelTipOverReady
+          ? 2.8 + Math.max(forwardPanelLean, sidePanelLean)
+          : faceFoundationUndermined
+            ? 2.15 + stress.collapse
+            : 1.65 + stress.collapse,
+      );
+
+      releasedThisStep += bandReleased;
+      if (bandReleased > 0) {
+        continue;
+      }
+    }
 
     for (let row = 1; row < wallBlockRows; row += 1) {
+      if (releasedThisStep >= maxUnsupportedWallBlockReleasesPerStep) {
+        break;
+      }
+
       for (let column = 0; column < columnCount; column += 1) {
+        if (releasedThisStep >= maxUnsupportedWallBlockReleasesPerStep) {
+          break;
+        }
+
         const block = getHouseBlock(face, row, column);
         const support = getHouseBlock(face, row - 1, column);
-        const lacksVerticalSupport = !support || support.stage >= 2 || support.body.isDynamic();
-        const lacksLateralSupport = faceIsLaterallyUnstable && row >= physicalWallRows;
+        const blockInfo = block?.wallBlock;
+        const graphUnsupported = blockInfo ? isStructuralNodeUnsupported(blockInfo, supportSnapshot) : false;
+        const physicallyFloating = !support || support.stage >= 2 || support.body.isDynamic();
+        const lacksVerticalSupport = graphUnsupported && (physicallyFloating || row >= physicalWallRows);
+        const lacksLateralSupport =
+          (faceIsLaterallyUnstable || faceIsBroadlyUndermined) &&
+          broadCollapseReady &&
+          row >= (faceFoundationUndermined ? 1 : physicalWallRows);
 
         if (!block || block.stage >= 2 || (!lacksVerticalSupport && !lacksLateralSupport)) {
           continue;
@@ -2708,9 +4855,13 @@ function releaseUnsupportedWallBlocks(): void {
         }
 
         breakWallBlock(block, impulse, detach);
+        state.structuralWallReleases += 1;
+        releasedThisStep += 1;
       }
     }
   }
+
+  releasedThisStep += releaseLeaningWallBlocks(maxUnsupportedWallBlockReleasesPerStep - releasedThisStep);
 
   const activeFrontChunks = wallChunks.filter((chunk) => !chunk.fragmented).length;
   const highestFrontRow = Math.max(
@@ -2735,6 +4886,10 @@ function releaseUnsupportedWallBlocks(): void {
     const info = block.wallBlock;
     return info?.face === 'front' && info.row === highestFrontRow;
   }).length;
+  const remainingFrontFaceBlocks = wallBlocks.filter((block) => {
+    const info = block.wallBlock;
+    return info?.face === 'front' && block.stage < 2;
+  }).length;
   const backTopSupports = wallBlocks.filter((block) => {
     const info = block.wallBlock;
     return info?.face === 'back' && info.row === highestBackRow && block.stage < 2;
@@ -2743,28 +4898,59 @@ function releaseUnsupportedWallBlocks(): void {
     const info = block.wallBlock;
     return info?.face === 'back' && info.row === highestBackRow;
   }).length;
+  const remainingBackFaceBlocks = wallBlocks.filter((block) => {
+    const info = block.wallBlock;
+    return info?.face === 'back' && block.stage < 2;
+  }).length;
 
-  if (
-    highestFrontRow >= 0 &&
-    frontTopSupports < Math.ceil(frontTopColumnCount * 0.45) &&
-    isHouseFaceBroadlyUndermined('front', houseRoofCollapseSupportRatio)
-  ) {
+  const shouldDropFrontRoof =
+    (
+      (
+        highestFrontRow >= 0 &&
+        frontTopColumnCount > 0 &&
+        frontTopSupports < Math.ceil(frontTopColumnCount * 0.68)
+      ) ||
+      (
+        remainingFrontFaceBlocks < Math.ceil(wallBlockColumns * 1.5) &&
+        getWallFaceStress('front').collapse > 0.68
+      ) ||
+      (
+        isHouseFaceBroadlyUndermined('front', getRoofDropSupportRatio()) &&
+        getWallFaceStress('front').collapse > 0.68 &&
+        wallBlocks.some((block) => block.wallBlock?.face === 'front' && block.body.isDynamic())
+      )
+    );
+  const shouldDropBackRoof =
+    (
+      (
+        highestBackRow >= 0 &&
+        backTopColumnCount > 0 &&
+        backTopSupports < Math.ceil(backTopColumnCount * 0.68)
+      ) ||
+      (
+        remainingBackFaceBlocks < Math.ceil(wallBlockColumns * 1.5) &&
+        getWallFaceStress('back').collapse > 0.68
+      ) ||
+      (
+        isHouseFaceBroadlyUndermined('back', getRoofDropSupportRatio()) &&
+        getWallFaceStress('back').collapse > 0.68 &&
+        wallBlocks.some((block) => block.wallBlock?.face === 'back' && block.body.isDynamic())
+      )
+    );
+  const shouldDropRoof = shouldDropFrontRoof || shouldDropBackRoof;
+
+  if (shouldDropRoof) {
     const roof = getHouseBlock('roof-front', wallBlockRows, 0);
     if (roof && roof.stage < 2) {
-      breakWallBlock(roof, new THREE.Vector3(0, 0.35, -1.5), new THREE.Vector3(0, -0.08, -0.12));
+      breakWallBlock(roof, new THREE.Vector3(0, -1.8, -1.5), new THREE.Vector3(0, -0.85, -0.12));
+    }
+    const backRoof = getHouseBlock('roof-back', wallBlockRows, 0);
+    if (backRoof && backRoof.stage < 2) {
+      breakWallBlock(backRoof, new THREE.Vector3(0, -1.8, 1.5), new THREE.Vector3(0, -0.85, 0.12));
     }
   }
 
-  if (
-    highestBackRow >= 0 &&
-    backTopSupports < Math.ceil(backTopColumnCount * 0.45) &&
-    isHouseFaceBroadlyUndermined('back', houseRoofCollapseSupportRatio)
-  ) {
-    const roof = getHouseBlock('roof-back', wallBlockRows, 0);
-    if (roof && roof.stage < 2) {
-      breakWallBlock(roof, new THREE.Vector3(0, 0.35, 1.5), new THREE.Vector3(0, -0.08, 0.12));
-    }
-  }
+  updateWallGravitySag();
 }
 
 function shatterWallBlock(entity: PhysicsEntity): void {
@@ -2793,20 +4979,28 @@ function shatterWallBlock(entity: PhysicsEntity): void {
 
   entity.body.setRotation(quaternion, true);
   if (!replaceWallBlockWithIndependentBrickBodies(entity, shatterImpulse, undefined, true)) {
-    removeEntityFromWorld(entity);
+    releaseWallBlockAsVisibleDebris(entity, shatterImpulse);
   }
   state.chippedWallSlabs += 1;
   state.wallDeformations = state.wallPiecesBroken;
 }
 
 function processDynamicWallFractures(): void {
-  if (getDynamicDebrisCount() > maxLiveDynamicDebris * 0.72) {
+  const structuralCollapseCandidates = entities.filter(
+    (entity) => entity.mesh.userData.structuralCollapseDebris && entity.wallBlock && entity.body.isDynamic() && !entity.fractured,
+  );
+
+  if (getDynamicDebrisCount() > maxLiveDynamicDebris * 0.72 && structuralCollapseCandidates.length === 0) {
     return;
   }
 
   let fracturedThisStep = 0;
+  const candidates = [
+    ...wallBlocks,
+    ...structuralCollapseCandidates.filter((entity) => !wallBlocks.includes(entity)),
+  ];
 
-  for (const entity of [...wallBlocks]) {
+  for (const entity of candidates) {
     if (fracturedThisStep >= 2) {
       return;
     }
@@ -2821,9 +5015,36 @@ function processDynamicWallFractures(): void {
     const velocity = entity.body.linvel();
     const speedSq = velocity.x * velocity.x + velocity.y * velocity.y + velocity.z * velocity.z;
     const fallDistance = info.home.y - position.y;
-    const shouldShatter =
+    const nearBulldozer = isEntityNearBulldozer(entity, 9.5);
+    const rotation = entity.body.rotation();
+    const localUp = new THREE.Vector3(0, 1, 0).applyQuaternion(
+      tempQuat.set(rotation.x, rotation.y, rotation.z, rotation.w),
+    );
+    const uprightness = Math.abs(localUp.y);
+    const isStructuralCollapseDebris = Boolean(entity.mesh.userData.structuralCollapseDebris);
+    const structuralDebrisAge = simulationStep - entity.createdStep;
+    const structuralPanelIsMostlyFlat = uprightness < 0.16;
+    const structuralGroundImpact =
+      isStructuralCollapseDebris &&
+      structuralDebrisAge > 22 &&
+      structuralPanelIsMostlyFlat &&
+      !nearBulldozer &&
+      hasGroundSupportForSettling(entity) &&
+      (speedSq > 1.2 || Math.abs(velocity.y) > 0.35 || fallDistance > entity.halfExtents.y * 0.55);
+    const structuralFlatStuck =
+      isStructuralCollapseDebris &&
+      structuralDebrisAge > 180 &&
+      structuralPanelIsMostlyFlat &&
+      !nearBulldozer &&
+      hasGroundSupportForSettling(entity);
+    const normalWallImpactShatter =
       fallDistance > Math.max(4.5, entity.halfExtents.y * 1.65) ||
       (speedSq > 32 && Math.abs(velocity.y) > 2.1);
+    const shouldShatter = isStructuralCollapseDebris
+      ? structuralGroundImpact || structuralFlatStuck
+      : normalWallImpactShatter ||
+      structuralGroundImpact ||
+      structuralFlatStuck;
 
     if (shouldShatter) {
       shatterWallBlock(entity);
@@ -2832,12 +5053,158 @@ function processDynamicWallFractures(): void {
   }
 }
 
+function isEntityNearBulldozer(entity: PhysicsEntity, padding = 4.8): boolean {
+  if (!bulldozer) {
+    return false;
+  }
+
+  const entityPosition = entity.body.translation();
+  const dozerPosition = bulldozer.body.translation();
+  const radius = Math.max(bulldozer.halfExtents.x, bulldozer.halfExtents.z) + Math.max(entity.halfExtents.x, entity.halfExtents.z) + padding;
+
+  return Math.hypot(entityPosition.x - dozerPosition.x, entityPosition.z - dozerPosition.z) < radius;
+}
+
+function driveStructuralWallDebrisTowardFlatFall(): void {
+  for (const entity of entities) {
+    const info = entity.wallBlock;
+    const visualBrickCount = Number(entity.mesh.userData.visualBrickCount ?? entity.mesh.userData.intactBrickVisualCount ?? 0);
+    const isReleasedStructuralDebris = Boolean(entity.mesh.userData.structuralCollapseDebris);
+    const isLooseHouseWallDebris =
+      entity.kind === 'debris' &&
+      visualBrickCount >= 2 &&
+      entity.name.startsWith('house-') &&
+      !entity.name.includes('roof');
+
+    if (
+      (!isReleasedStructuralDebris && !isLooseHouseWallDebris) ||
+      !entity.body.isDynamic() ||
+      entity.carried ||
+      (info ? isRoofFace(info.face) : false)
+    ) {
+      continue;
+    }
+
+    const rotation = entity.body.rotation();
+    const localUp = new THREE.Vector3(0, 1, 0).applyQuaternion(
+      tempQuat.set(rotation.x, rotation.y, rotation.z, rotation.w),
+    );
+    const uprightness = Math.abs(localUp.y);
+
+    if (uprightness < 0.22) {
+      continue;
+    }
+
+    const position = entity.body.translation();
+    const velocity = entity.body.linvel();
+    const angularVelocity = entity.body.angvel();
+    const fallDirection = info
+      ? getFaceLowResistanceDirection(info.face)
+      : getApproximateOutwardFallDirection(position.x, position.z);
+    const ageFactor = THREE.MathUtils.clamp((simulationStep - entity.createdStep) / 45, 0.35, 1.4);
+    const nearBulldozer = isEntityNearBulldozer(entity, 6.5);
+    const panelCoherence = isReleasedStructuralDebris && (simulationStep - entity.createdStep < 180 || nearBulldozer);
+    const spin = panelCoherence
+      ? (0.75 + uprightness * 0.35) * ageFactor
+      : (4.2 + uprightness * 3.2) * ageFactor;
+
+    entity.body.setGravityScale(1.75, true);
+    if (panelCoherence) {
+      entity.body.setAngularDamping(4.2);
+      entity.body.setLinearDamping(0.58);
+    }
+    entity.body.setLinvel(
+      {
+        x: velocity.x * (panelCoherence ? 0.9 : 0.72) + fallDirection.x * (panelCoherence ? 0.42 : 0.9),
+        y: Math.min(velocity.y - (panelCoherence ? 0.08 : 0.18), panelCoherence ? -1.05 : -2.4),
+        z: velocity.z * (panelCoherence ? 0.9 : 0.72) + fallDirection.z * (panelCoherence ? 0.42 : 0.9),
+      },
+      true,
+    );
+    entity.body.setAngvel(
+      {
+        x: angularVelocity.x * (panelCoherence ? 0.08 : 0.35) - fallDirection.z * spin,
+        y: angularVelocity.y * (panelCoherence ? 0.02 : 0.2),
+        z: angularVelocity.z * (panelCoherence ? 0.08 : 0.35) + fallDirection.x * spin,
+      },
+      true,
+    );
+
+    if (position.y > entity.halfExtents.y * 1.4 && simulationStep - entity.createdStep > 24) {
+      entity.body.applyImpulse(
+        {
+          x: fallDirection.x * entity.mass * 0.16,
+          y: -entity.mass * 0.12,
+          z: fallDirection.z * entity.mass * 0.16,
+        },
+        true,
+      );
+    }
+  }
+}
+
+function stabilizeCollapsedRoofDebris(): void {
+  for (const entity of entities) {
+    if (!entity.mesh.userData.roofCollapseDebris || !entity.body.isDynamic() || entity.carried) {
+      continue;
+    }
+
+    const position = entity.body.translation();
+    const velocity = entity.body.linvel();
+    const angularVelocity = entity.body.angvel();
+    const maxY = Number(entity.mesh.userData.maxRoofCollapseY ?? position.y + 0.1);
+    let nextY = position.y;
+    let nextVelocityY = velocity.y;
+
+    if (position.y > maxY) {
+      nextY = maxY;
+      nextVelocityY = Math.min(nextVelocityY, -0.35);
+    } else if (velocity.y > 0.12) {
+      nextVelocityY = -0.08;
+    }
+
+    if (nextY !== position.y) {
+      entity.body.setTranslation({ x: position.x, y: nextY, z: position.z }, true);
+    }
+
+    if (nextVelocityY !== velocity.y) {
+      entity.body.setLinvel({ x: velocity.x * 0.82, y: nextVelocityY, z: velocity.z * 0.82 }, true);
+    }
+
+    entity.body.setGravityScale(2.15, true);
+    entity.body.setAngvel(
+      {
+        x: THREE.MathUtils.clamp(angularVelocity.x, -0.75, 0.75),
+        y: THREE.MathUtils.clamp(angularVelocity.y, -0.18, 0.18),
+        z: THREE.MathUtils.clamp(angularVelocity.z, -0.75, 0.75),
+      },
+      true,
+    );
+  }
+}
+
+function getApproximateOutwardFallDirection(x: number, z: number): THREE.Vector3 {
+  const dx = x;
+  const dz = z - houseCenterZ;
+
+  if (Math.abs(dx) > Math.abs(dz)) {
+    return new THREE.Vector3(dx >= 0 ? 1 : -1, 0, 0);
+  }
+
+  return new THREE.Vector3(0, 0, dz >= 0 ? 1 : -1);
+}
+
 function damageEntity(entity: PhysicsEntity, amount: number, impulse: THREE.Vector3, _contactPosition?: THREE.Vector3): void {
   if (!entity.breakable || (entity.kind !== 'wall' && entity.stage >= 2)) {
     return;
   }
 
-  entity.damage += amount;
+  const effectiveAmount = entity.kind === 'wall' && entity.stage < 2
+    ? amount * getWallImpactDamageScale()
+    : amount;
+  const previousDamage = entity.damage;
+
+  entity.damage += effectiveAmount;
 
   if (entity.kind === 'debris') {
     entity.body.applyImpulse({ x: impulse.x * 0.08, y: impulse.y * 0.04, z: impulse.z * 0.08 }, true);
@@ -2845,14 +5212,20 @@ function damageEntity(entity: PhysicsEntity, amount: number, impulse: THREE.Vect
   }
 
   if (entity.kind === 'wall') {
+    if (entity.wallBlock && !isRoofFace(entity.wallBlock.face) && entity.wallBlock.row < physicalWallRows) {
+      getWallFaceStress(entity.wallBlock.face).lastBearingContactStep = simulationStep;
+    }
+    registerWallReplayDamage(entity, previousDamage, effectiveAmount);
+
     if (entity.stage >= 2) {
       entity.body.applyImpulse({ x: impulse.x * 0.25, y: impulse.y * 0.25, z: impulse.z * 0.25 }, true);
       return;
     }
 
-    applyWallBulge(entity, impulse, amount);
+    applyStructuralDamage(entity, effectiveAmount, impulse);
+    applyWallBulge(entity, impulse, effectiveAmount);
 
-    if (entity.damage >= wallBlockBreakDamage) {
+    if (entity.damage >= getWallBreakDamage()) {
       const blockInfo = entity.wallBlock;
 
       if (blockInfo?.face === 'front' && blockInfo.row >= 2 && createFrontWallChunksFromImpact(impulse, blockInfo)) {
@@ -2963,40 +5336,16 @@ function getStaticWallVisualInfo(object: THREE.Object3D): StaticWallVisualInfo |
   return object.userData.staticWallVisual as StaticWallVisualInfo | undefined;
 }
 
-function getStaticWallVisual(face: HouseBlockFace, row: number, column: number): THREE.Object3D | undefined {
-  return staticWallVisuals.find((object) => {
-    if (object.userData.physicalFacadeRowVisual) {
-      return false;
-    }
-
-    const info = getStaticWallVisualInfo(object);
-    return info?.face === face && info.row === row && (info.column === column || info.column === -1);
-  });
-}
-
 function isHouseColumnSupported(face: HouseBlockFace, row: number, column: number): boolean {
   if (row <= 0) {
     return true;
   }
 
+  const faceSupportRatio = getFaceLowerSupportRatio(face);
+  const faceIsBroadlyUndermined = isHouseFaceBroadlyUndermined(face);
+
   if (column < 0) {
-    const columnCount = getHouseFaceColumnCount(face);
-    let supportedColumns = 0;
-
-    for (let sampleColumn = 0; sampleColumn < columnCount; sampleColumn += 1) {
-      const physicalSupport = getHouseBlock(face, row - 1, sampleColumn);
-
-      if (physicalSupport && physicalSupport.stage < 2 && !physicalSupport.body.isDynamic()) {
-        supportedColumns += 1;
-      }
-    }
-
-    if (supportedColumns / Math.max(1, columnCount) >= 0.35) {
-      return true;
-    }
-
-    const lowerVisualRow = getStaticWallVisual(face, row - 1, -1);
-    return Boolean(lowerVisualRow) && isHouseColumnSupported(face, row - 1, -1);
+    return !faceIsBroadlyUndermined && faceSupportRatio >= getSupportReleaseRatio();
   }
 
   const physicalSupport = getHouseBlock(face, row - 1, column);
@@ -3005,7 +5354,7 @@ function isHouseColumnSupported(face: HouseBlockFace, row: number, column: numbe
     return true;
   }
 
-  return row > physicalWallRows && isHouseColumnSupported(face, row - 1, -1);
+  return row > physicalWallRows && !faceIsBroadlyUndermined && faceSupportRatio >= getSupportReleaseRatio();
 }
 
 function damageStaticWallVisual(
@@ -3013,6 +5362,7 @@ function damageStaticWallVisual(
   impulseDirection: THREE.Vector3,
   impactForce: number,
   eraseGroupedRow = false,
+  preferGroupedBlockRelease = false,
 ): PhysicsEntity | null {
   const info = getStaticWallVisualInfo(object);
 
@@ -3028,9 +5378,9 @@ function damageStaticWallVisual(
   object.matrixWorld.decompose(position, rotation, scale);
   scene.remove(object);
   staticWallVisuals = staticWallVisuals.filter((candidate) => candidate !== object);
-  disposeObjectGeometry(object);
 
   if (info.column < 0 && eraseGroupedRow && object.userData.physicalFacadeRowVisual) {
+    disposeObjectGeometry(object);
     state.visualWallImpacts += 1;
     state.wallPiecesBroken += 1;
     state.wallDeformations = state.wallPiecesBroken;
@@ -3038,7 +5388,28 @@ function damageStaticWallVisual(
     return null;
   }
 
-  return fragmentStaticWallVisualToIndependentBricks(object.name, info, position, rotation, impulseDirection, impactForce);
+  const debris = fragmentStaticWallVisualToIndependentBricks(
+    object.name,
+    info,
+    position,
+    rotation,
+    impulseDirection,
+    impactForce,
+    preferGroupedBlockRelease,
+  );
+
+  if (debris) {
+    disposeObjectGeometry(object);
+    return debris;
+  }
+
+  if (preferGroupedBlockRelease && info.column < 0) {
+    scene.add(object);
+    staticWallVisuals.push(object);
+    return null;
+  }
+
+  return createReleasedStaticWallVisualDebris(object, info, position, rotation, impulseDirection, impactForce);
 }
 
 function fragmentStaticWallVisualToIndependentBricks(
@@ -3048,13 +5419,12 @@ function fragmentStaticWallVisualToIndependentBricks(
   rotation: THREE.Quaternion,
   impulseDirection: THREE.Vector3,
   impactForce: number,
+  preferGroupedBlockRelease = false,
 ): PhysicsEntity | null {
-  state.visualWallImpacts += 1;
-  state.wallBreaches = 1;
+  const dynamicDebrisCount = getDynamicDebrisCount();
+  const groupedRowRelease = preferGroupedBlockRelease && info.column < 0;
 
-  if (getDynamicDebrisCount() > maxLiveDynamicDebris * 0.68) {
-    state.wallPiecesBroken += 1;
-    state.wallDeformations = state.wallPiecesBroken;
+  if (dynamicDebrisCount > maxLiveDynamicDebris * (groupedRowRelease ? 0.92 : 0.68)) {
     return null;
   }
 
@@ -3062,19 +5432,29 @@ function fragmentStaticWallVisualToIndependentBricks(
   const length = info.halfExtents[lengthAxis] * 2;
   const height = info.halfExtents.y * 2;
   const depth = (lengthAxis === 'x' ? info.halfExtents.z : info.halfExtents.x) * 2;
-  const columns = info.column < 0
-    ? Math.max(4, Math.min(14, Math.round(length / masonryBrickLength)))
-    : Math.max(2, Math.min(4, Math.round(length / masonryBrickLength)));
-  const rows = Math.max(1, Math.min(3, Math.round(height / masonryBrickHeight)));
+  const requestedColumns = groupedRowRelease
+    ? Math.max(2, Math.round(length / masonryBrickLength))
+    : info.column < 0
+      ? Math.max(4, Math.min(14, Math.round(length / masonryBrickLength)))
+      : Math.max(2, Math.min(4, Math.round(length / masonryBrickLength)));
+  const requestedRows = groupedRowRelease
+    ? Math.max(1, Math.round(height / masonryBrickHeight))
+    : Math.max(1, Math.min(3, Math.round(height / masonryBrickHeight)));
+  let columns = requestedColumns;
+  let rows = requestedRows;
   const requestedCount = rows * columns;
-  const availableCount = Math.max(0, Math.floor(maxLiveDynamicDebris * 0.78 - getDynamicDebrisCount()));
+  const availableCount = Math.max(
+    0,
+    Math.floor(maxLiveDynamicDebris * (groupedRowRelease ? 0.98 : 0.78) - dynamicDebrisCount),
+  );
   const countBudget = Math.min(requestedCount, availableCount);
 
-  if (countBudget <= 0) {
-    state.wallPiecesBroken += 1;
-    state.wallDeformations = state.wallPiecesBroken;
+  if (countBudget <= 0 || (groupedRowRelease && countBudget < requestedCount)) {
     return null;
   }
+
+  state.visualWallImpacts += 1;
+  state.wallBreaches = 1;
 
   const lengthDirection = lengthAxis === 'x'
     ? new THREE.Vector3(1, 0, 0).applyQuaternion(rotation)
@@ -3122,29 +5502,34 @@ function fragmentStaticWallVisualToIndependentBricks(
         rubbleBrickMaterials[materialIndex] ?? materials.wall,
         THREE.MathUtils.clamp(0.7 + impactForce * 0.002 + info.row * 0.04, 0.8, 3.6),
         rotation,
-        1.1,
-        1.38,
+        0.42,
+        0.72,
       );
       const spread = (column - (columns - 1) / 2) * 0.025;
 
-      debris.mesh.userData.visualBrickCount = 1;
+      debris.mesh.userData.visualBrickCount = Number(debris.mesh.userData.visualBrickCount ?? 1);
       debris.mesh.userData.visualWallImpactCount = maxVisualWallImpactsPerMover;
+      debris.body.setGravityScale(1.35, true);
       debris.body.setLinvel(
         {
           x: push.x * (0.82 + info.row * 0.028) * destructionSpeed + fallDirection.x * 0.2 + lengthDirection.x * spread,
-          y: -0.42 * destructionSpeed - info.row * 0.012 + row * 0.025,
+          y: -1.05 * destructionSpeed - info.row * 0.035 - row * 0.015,
           z: push.z * (0.82 + info.row * 0.028) * destructionSpeed + fallDirection.z * 0.2 + lengthDirection.z * spread,
         },
         true,
       );
       debris.body.setAngvel(
         {
-          x: seededRange(seed + 4, -0.42, 0.42) * destructionSpeed,
-          y: seededRange(seed + 5, -0.35, 0.35) * destructionSpeed,
-          z: seededRange(seed + 6, -0.42, 0.42) * destructionSpeed,
+          x: seededRange(seed + 4, -0.22, 0.22) * destructionSpeed,
+          y: seededRange(seed + 5, -0.18, 0.18) * destructionSpeed,
+          z: seededRange(seed + 6, -0.22, 0.22) * destructionSpeed,
         },
         true,
       );
+      if (groupedRowRelease) {
+        debris.body.setLinearDamping(0.56);
+        debris.body.setAngularDamping(0.82);
+      }
 
       firstDebris ??= debris;
       created += 1;
@@ -3156,13 +5541,81 @@ function fragmentStaticWallVisualToIndependentBricks(
   return firstDebris;
 }
 
+function createReleasedStaticWallVisualDebris(
+  object: THREE.Object3D,
+  info: StaticWallVisualInfo,
+  position: THREE.Vector3,
+  rotation: THREE.Quaternion,
+  impulseDirection: THREE.Vector3,
+  impactForce: number,
+): PhysicsEntity {
+  const fallDirection = getFaceFallDirection(info.face);
+  const push = impulseDirection.lengthSq() > 0.01 ? impulseDirection.clone().normalize() : fallDirection.clone();
+  const destructionSpeed = getDestructionSpeed();
+  const slabMass = THREE.MathUtils.clamp(
+    info.halfExtents.x * info.halfExtents.y * info.halfExtents.z * 0.14 + impactForce * 0.01,
+    6,
+    22,
+  );
+  const slab = createDynamicBox(
+    `${object.name}-released-slab`,
+    'debris',
+    info.halfExtents,
+    position,
+    materials.wall,
+    slabMass,
+    rotation,
+    1.12,
+    1.28,
+  );
+
+  delete object.userData.staticWallVisual;
+  delete object.userData.physicalFacadeRowVisual;
+  object.userData.intactBrickVisual = false;
+  object.userData.intactBrickVisualCount = 0;
+  object.userData.visualBrickCount = Number(object.userData.visualBrickCount ?? 0);
+  object.traverse((child) => {
+    if (child instanceof THREE.Mesh) {
+      child.castShadow = true;
+      child.receiveShadow = true;
+    }
+  });
+  replaceEntityVisual(slab, object);
+
+  const sideBias = info.column < 0
+    ? 0
+    : (info.column - (getHouseFaceColumnCount(info.face) - 1) / 2) / Math.max(1, getHouseFaceColumnCount(info.face));
+
+  slab.body.setLinvel(
+    {
+      x: push.x * 0.9 * destructionSpeed + fallDirection.x * 0.42,
+      y: -0.55 - info.row * 0.04 + Math.min(0.18, impactForce * 0.002),
+      z: push.z * 0.9 * destructionSpeed + fallDirection.z * 0.42,
+    },
+    true,
+  );
+  slab.body.setAngvel(
+    {
+      x: -fallDirection.z * (0.55 + info.row * 0.03),
+      y: sideBias * 0.28,
+      z: fallDirection.x * (0.55 + info.row * 0.03),
+    },
+    true,
+  );
+  state.visualWallImpacts += 1;
+  state.wallPiecesBroken += 1;
+  state.wallDeformations = state.wallPiecesBroken;
+  state.wallBreaches = 1;
+  return slab;
+}
+
 function releaseUnsupportedStaticWallVisuals(): void {
   let releasedThisStep = 0;
 
   const sortedVisuals = [...staticWallVisuals].sort((a, b) => {
     const first = getStaticWallVisualInfo(a);
     const second = getStaticWallVisualInfo(b);
-    return (first?.row ?? 0) - (second?.row ?? 0);
+    return (second?.row ?? 0) - (first?.row ?? 0);
   });
 
   for (const visualWall of sortedVisuals) {
@@ -3180,8 +5633,11 @@ function releaseUnsupportedStaticWallVisuals(): void {
       break;
     }
 
+    const faceIsBroadlyUndermined = isHouseFaceBroadlyUndermined(info.face);
     const lacksVerticalSupport = !isHouseColumnSupported(info.face, info.row, info.column);
-    const lacksLateralSupport = isFaceLaterallyUnstable(info.face) && info.row >= physicalWallRows;
+    const lacksLateralSupport =
+      (isFaceLaterallyUnstable(info.face) || faceIsBroadlyUndermined) &&
+      info.row >= physicalWallRows;
 
     if (!lacksVerticalSupport && !lacksLateralSupport) {
       continue;
@@ -3202,7 +5658,13 @@ function releaseUnsupportedStaticWallVisuals(): void {
     }
 
     const beforeVisualImpactCount = state.visualWallImpacts;
-    const debris = damageStaticWallVisual(visualWall, releaseImpulse, secondaryWallImpactForceThreshold * 1.15, true);
+    const debris = damageStaticWallVisual(
+      visualWall,
+      releaseImpulse,
+      getSecondaryImpactThreshold() * 1.15,
+      true,
+      true,
+    );
 
     if (state.visualWallImpacts > beforeVisualImpactCount) {
       releasedThisStep += 1;
@@ -3223,7 +5685,7 @@ function releaseUnsupportedStaticWallVisuals(): void {
 }
 
 function canDynamicBodyDamageStaticVisualWall(moving: PhysicsEntity, force: number): boolean {
-  if (force < secondaryWallImpactForceThreshold * 1.35) {
+  if (force < getSecondaryImpactThreshold() * 1.35) {
     return false;
   }
 
@@ -3277,7 +5739,7 @@ function processSecondaryWallImpacts(): void {
     const speed = Math.hypot(velocity.x, velocity.y, velocity.z);
     const force = speed * Math.max(1, moving.mass);
 
-    if (force < secondaryWallImpactForceThreshold) {
+    if (force < getSecondaryImpactThreshold()) {
       continue;
     }
 
@@ -3304,14 +5766,15 @@ function processSecondaryWallImpacts(): void {
         continue;
       }
 
-      const damage = THREE.MathUtils.clamp((force - secondaryWallImpactForceThreshold) * 0.16, 1.2, wallBlockBreakDamage + 4);
+      const secondaryThreshold = getSecondaryImpactThreshold();
+      const damage = THREE.MathUtils.clamp((force - secondaryThreshold) * 0.16, 1.2, getWallBreakDamage() + 4);
       const impulse = impulseDirection.clone().multiplyScalar(THREE.MathUtils.clamp(speed * 0.9, 1.2, 8.5));
 
       target.lastImpactStep = simulationStep;
       state.secondaryWallImpacts += 1;
       damageEntity(target, damage, impulse, target.mesh.position);
 
-      const moverVelocityScale = force > secondaryWallImpactForceThreshold * 2 ? 0.72 : 0.86;
+      const moverVelocityScale = force > secondaryThreshold * 2 ? 0.72 : 0.86;
       moving.body.setLinvel(
         {
           x: velocity.x * moverVelocityScale,
@@ -3353,7 +5816,7 @@ function processSecondaryWallImpacts(): void {
       damageStaticWallVisual(visualWall, impulseDirection, force);
       moving.mesh.userData.visualWallImpactCount = visualImpactCount + 1;
       moving.lastImpactStep = simulationStep;
-      const moverVelocityScale = force > secondaryWallImpactForceThreshold * 2 ? 0.48 : 0.62;
+      const moverVelocityScale = force > getSecondaryImpactThreshold() * 2 ? 0.48 : 0.62;
 
       moving.body.setLinvel(
         {
@@ -3391,16 +5854,18 @@ function maybeDropBridgeDecks(): void {
 
 function updateBulldozerControls(dt: number): void {
   const current = bulldozer.body.translation();
+  const previousYaw = dozerYaw;
+  const activeOverride = controlOverride ?? touchControlOverride;
   const forwardKey = keys.has('KeyW') || (!cameraFpsMode && keys.has('ArrowUp'));
   const reverseKey = keys.has('KeyS') || (!cameraFpsMode && keys.has('ArrowDown'));
   const leftKey = keys.has('KeyA') || (!cameraFpsMode && keys.has('ArrowLeft'));
   const rightKey = keys.has('KeyD') || (!cameraFpsMode && keys.has('ArrowRight'));
-  const throttle = controlOverride?.throttle
+  const throttle = activeOverride?.throttle
     ?? ((forwardKey ? 1 : 0) - (reverseKey ? 1 : 0));
-  const steering = controlOverride?.steering
+  const steering = activeOverride?.steering
     ?? ((leftKey ? 1 : 0) - (rightKey ? 1 : 0));
-  const lowGear = controlOverride?.lowGear ?? (keys.has('ShiftLeft') || keys.has('ShiftRight'));
-  const brake = controlOverride?.brake ?? false;
+  const lowGear = activeOverride?.lowGear ?? (keys.has('ShiftLeft') || keys.has('ShiftRight'));
+  const brake = activeOverride?.brake ?? false;
   const targetSpeed = throttle * (lowGear ? 8.4 : 10.8);
   const acceleration = throttle === 0 ? 3.2 : tuning.engineTorque * 0.055;
 
@@ -3416,6 +5881,7 @@ function updateBulldozerControls(dt: number): void {
 
     dozerYaw += steering * Math.max(stationaryTurnRate, movingTurnRate) * dt;
   }
+  dozerTurnSpeed = dt > 0 ? (dozerYaw - previousYaw) / dt : 0;
 
   tempQuat.setFromAxisAngle(yAxis, dozerYaw);
   const forward = tempForward.set(0, 0, -1).applyQuaternion(tempQuat).setY(0).normalize();
@@ -3437,8 +5903,8 @@ function updateBulldozerControls(dt: number): void {
     .set(nextPosition.x, nextPosition.y, nextPosition.z)
     .addScaledVector(forward, bladeMountDistance)
     .addScaledVector(right, 0);
-  const lowerBlade = controlOverride?.lowerBlade ?? keys.has('KeyE');
-  const raiseBlade = controlOverride?.raiseBlade ?? keys.has('KeyQ');
+  const lowerBlade = activeOverride?.lowerBlade ?? keys.has('KeyE');
+  const raiseBlade = activeOverride?.raiseBlade ?? keys.has('KeyQ');
   const targetY = nextPosition.y + (raiseBlade ? 0.52 : lowerBlade ? -0.2 : -0.06) * bulldozerScale;
   const bladePos = blade.body.translation();
 
@@ -3492,13 +5958,18 @@ function damageEntitiesInProbe(probe: ImpactProbe, speed: number): void {
 
     entity.lastImpactStep = simulationStep;
     state.impactEvents += 1;
+    if (entity.kind === 'wall') {
+      registerBulldozerWallReplayContact(entity, amount);
+    }
     damageEntity(entity, amount, impulse, probe.center);
     dozerSpeed *= Math.max(0.78, 1 - entity.mass * 0.0015);
   }
 }
 
 function processVehicleDamage(): void {
-  const speed = Math.abs(dozerSpeed);
+  const linearSpeed = Math.abs(dozerSpeed);
+  const rotationalContactSpeed = Math.abs(dozerTurnSpeed) * Math.max(bulldozer.halfExtents.x, bulldozer.halfExtents.z);
+  const speed = Math.max(linearSpeed, Math.min(7.5, rotationalContactSpeed));
 
   if (speed < 0.15) {
     return;
@@ -3509,7 +5980,11 @@ function processVehicleDamage(): void {
   const forward = getBodyForward(bulldozer.body, tempForward).clone();
   const right = getBodyRight(bulldozer.body, tempRight).clone();
   const movingForward = dozerSpeed >= 0;
+  const turning = Math.abs(dozerTurnSpeed) > 0.05;
+  const turnSign = Math.sign(dozerTurnSpeed) || 1;
   const bladePosition = getBladeWorldPosition(new THREE.Vector3());
+  const rearBumperCenter = base.clone().addScaledVector(forward, -Math.max(2.0, bulldozer.halfExtents.z - 0.35));
+  const rearDamageHalfRight = bulldozer.halfExtents.x + 0.5;
   const cabCenter = base.clone()
     .addScaledVector(right, cabLocalOffset.x)
     .addScaledVector(forward, -cabLocalOffset.z)
@@ -3546,11 +6021,11 @@ function processVehicleDamage(): void {
       probeRight: right,
     },
     {
-      center: base.clone().addScaledVector(forward, -2.0),
-      damageScale: movingForward ? 0.35 : 1.05,
-      halfForward: 0.72,
-      halfHeight: 0.88,
-      halfRight: 1.22,
+      center: rearBumperCenter,
+      damageScale: movingForward ? 0.35 : 1.28,
+      halfForward: 1.18,
+      halfHeight: 1.05,
+      halfRight: rearDamageHalfRight,
       impulseDir: forward.clone().multiplyScalar(-1),
       probeForward: forward,
       probeRight: right,
@@ -3576,6 +6051,66 @@ function processVehicleDamage(): void {
       probeRight: right,
     },
   ];
+
+  if (turning) {
+    const frontTangential = right.clone().multiplyScalar(-turnSign);
+    const rearTangential = right.clone().multiplyScalar(turnSign);
+    const rightTangential = forward.clone().multiplyScalar(turnSign);
+    const leftTangential = forward.clone().multiplyScalar(-turnSign);
+
+    probes.push(
+      {
+        center: bladePosition,
+        damageScale: 1.18,
+        halfForward: 0.92,
+        halfHeight: 0.82,
+        halfRight: bladeHalf.x + 0.25,
+        impulseDir: frontTangential,
+        probeForward: forward,
+        probeRight: right,
+      },
+      {
+        center: base.clone().addScaledVector(forward, 2.05),
+        damageScale: 1.05,
+        halfForward: 0.9,
+        halfHeight: 1.05,
+        halfRight: 1.58,
+        impulseDir: frontTangential,
+        probeForward: forward,
+        probeRight: right,
+      },
+      {
+        center: rearBumperCenter.clone(),
+        damageScale: 1.02,
+        halfForward: 1.18,
+        halfHeight: 1.05,
+        halfRight: rearDamageHalfRight + 0.18,
+        impulseDir: rearTangential,
+        probeForward: forward,
+        probeRight: right,
+      },
+      {
+        center: base.clone().addScaledVector(right, 1.45),
+        damageScale: 1.06,
+        halfForward: 2.25,
+        halfHeight: 0.92,
+        halfRight: 0.62,
+        impulseDir: rightTangential,
+        probeForward: forward,
+        probeRight: right,
+      },
+      {
+        center: base.clone().addScaledVector(right, -1.45),
+        damageScale: 1.06,
+        halfForward: 2.25,
+        halfHeight: 0.92,
+        halfRight: 0.62,
+        impulseDir: leftTangential,
+        probeForward: forward,
+        probeRight: right,
+      },
+    );
+  }
 
   probes.forEach((probe) => damageEntitiesInProbe(probe, speed));
 }
@@ -3710,7 +6245,70 @@ function panCamera(dx: number, dy: number): void {
   }
 }
 
+function getReplayBulldozerProxyPosition(): THREE.Vector3 {
+  const dozerProxy = Array.from(demolitionReplayRecording.objects.values()).find((object) => object.name === bulldozer?.name);
+
+  return dozerProxy?.proxy.visible ? dozerProxy.proxy.position.clone() : lastReplayFocusPoint.clone();
+}
+
+function updateReplayCamera(dt: number): void {
+  const mode = demolitionReplayPlayback.cameraMode;
+  const dozerPosition = getReplayBulldozerProxyPosition();
+  const followTarget = demolitionReplayPlayback.focusSelectedWall || mode === 'follow-wall'
+    ? lastReplayFocusPoint
+    : dozerPosition;
+
+  if (mode === 'free') {
+    return;
+  }
+
+  if (mode === 'top-down') {
+    cameraTarget.copy(followTarget);
+    camera.position.set(followTarget.x, followTarget.y + 48, followTarget.z + 0.01);
+    camera.lookAt(cameraTarget);
+    return;
+  }
+
+  if (mode === 'cinematic') {
+    const orbit = demolitionReplayPlayback.lastAppliedTime * 0.28;
+    const radius = 38;
+
+    cameraTarget.copy(followTarget);
+    camera.position.set(
+      followTarget.x + Math.sin(orbit) * radius,
+      followTarget.y + 20,
+      followTarget.z + Math.cos(orbit) * radius,
+    );
+    camera.lookAt(cameraTarget);
+    return;
+  }
+
+  if (mode === 'follow-bulldozer' || mode === 'gameplay') {
+    cameraTarget.set(dozerPosition.x, dozerPosition.y + 1.25, dozerPosition.z);
+  } else {
+    cameraTarget.copy(followTarget);
+  }
+
+  const replayPitch = mode === 'follow-wall' ? 0.58 : cameraPitch;
+  const replayDistance = mode === 'follow-wall' ? Math.min(cameraDistance, 38) : cameraDistance;
+  const cosPitch = Math.cos(replayPitch);
+  const yaw = mode === 'gameplay' ? cameraYaw : cameraYaw + dt * 0.08;
+  const desired = tempVec3.set(
+    Math.sin(yaw) * cosPitch * replayDistance,
+    Math.sin(replayPitch) * replayDistance,
+    Math.cos(yaw) * cosPitch * replayDistance,
+  );
+
+  camera.position.copy(cameraTarget).add(desired);
+  camera.lookAt(cameraTarget);
+}
+
 function updateCamera(_dt: number): void {
+  if (demolitionReplayPlayback.active) {
+    updateReplayCamera(_dt);
+    return;
+  }
+
   const position = bulldozer.body.translation();
 
   if (cameraFpsMode) {
@@ -3765,6 +6363,12 @@ function updateHud(): void {
   const destroyedSupports = bridgeSupports.filter((support) => support.entity.stage >= 2).length;
   const crackedSupports = bridgeSupports.filter((support) => support.entity.stage === 1).length;
   const speed = Math.abs(dozerSpeed);
+  const bridgeHudLines = bridgeSupports.length > 0 || bridgeDecks.length > 0
+    ? [
+      `bridge supports cracked ${crackedSupports}, destroyed ${destroyedSupports}/8`,
+      `bridge ${state.bridgeCollapsed ? 'collapsed' : 'standing'} | deck pieces dropped ${state.deckPiecesDropped}`,
+    ]
+    : [];
 
   hudFpsReadout.textContent = `FPS ${state.fps.toFixed(0)}`;
   hudStatusReadout.textContent = [
@@ -3773,8 +6377,7 @@ function updateHud(): void {
     `Q/E blade | G pickup | X release | T reset | C recenter | H tuning`,
     `speed ${speed.toFixed(1)} | carried ${state.carriedPieces} pcs / ${state.carriedMass.toFixed(0)} mass`,
     `wall blocks broken ${state.wallPiecesBroken} | wall breached ${state.wallBreaches ? 'yes' : 'no'}`,
-    `bridge supports cracked ${crackedSupports}, destroyed ${destroyedSupports}/8`,
-    `bridge ${state.bridgeCollapsed ? 'collapsed' : 'standing'} | deck pieces dropped ${state.deckPiecesDropped}`,
+    ...bridgeHudLines,
   ].join('\n');
 }
 
@@ -3804,14 +6407,30 @@ function separateDynamicEntityFromBox(
     const topY = center.y + half.y;
     const bottomY = position.y - entity.halfExtents.y;
     const restingGap = bottomY - topY;
+    const isStructuralWallDebris = Boolean(entity.mesh.userData.structuralCollapseDebris);
+    const minRestingGap = isStructuralWallDebris ? -0.16 : -0.1;
+    const maxRestingGap = isStructuralWallDebris ? 0.34 : 0.26;
 
-    if (restingGap > -0.1 && restingGap < 0.26) {
+    if (position.y > center.y && restingGap > minRestingGap && restingGap < maxRestingGap) {
       const velocity = entity.body.linvel();
-      const settledY = topY + entity.halfExtents.y + 0.018;
+      const settledY = topY + entity.halfExtents.y + (isStructuralWallDebris ? 0.045 : 0.018);
+      const horizontalDamping = isStructuralWallDebris ? 0.82 : 0.38;
+      const verticalVelocity = isStructuralWallDebris
+        ? Math.min(Math.max(-0.18, velocity.y), 0.08)
+        : Math.max(0, velocity.y) * 0.12;
+      const angularDamping = isStructuralWallDebris ? 0.72 : 0.28;
+      const angularVelocity = entity.body.angvel();
 
       entity.body.setTranslation({ x: position.x, y: settledY, z: position.z }, true);
-      entity.body.setLinvel({ x: velocity.x * 0.48, y: Math.max(0, velocity.y) * 0.18, z: velocity.z * 0.48 }, true);
-      entity.body.setAngvel({ x: 0, y: entity.body.angvel().y * 0.35, z: 0 }, true);
+      entity.body.setLinvel({ x: velocity.x * horizontalDamping, y: verticalVelocity, z: velocity.z * horizontalDamping }, true);
+      entity.body.setAngvel(
+        {
+          x: isStructuralWallDebris ? angularVelocity.x * angularDamping : 0,
+          y: angularVelocity.y * angularDamping,
+          z: isStructuralWallDebris ? angularVelocity.z * angularDamping : 0,
+        },
+        true,
+      );
       return;
     }
   }
@@ -3826,6 +6445,9 @@ function separateDynamicEntityFromBox(
     : (localForward >= 0 ? 1 : -1);
   const push = pushAlongRight ? right.clone().multiplyScalar(sign) : forward.clone().multiplyScalar(sign);
   const pushDistance = (pushAlongRight ? horizontalOverlapRight : horizontalOverlapForward) + 0.06;
+  const isRoofCollapseDebris = Boolean(entity.mesh.userData.roofCollapseDebris);
+  const isStructuralWallDebris = Boolean(entity.mesh.userData.structuralCollapseDebris);
+  const currentVelocity = entity.body.linvel();
 
   entity.body.setTranslation(
     {
@@ -3835,7 +6457,18 @@ function separateDynamicEntityFromBox(
     },
     true,
   );
-  entity.body.setLinvel({ x: push.x * 1.4, y: Math.max(0.2, entity.body.linvel().y), z: push.z * 1.4 }, true);
+  entity.body.setLinvel(
+    {
+      x: push.x * (isRoofCollapseDebris ? 0.55 : isStructuralWallDebris ? 0.42 : 1.4),
+      y: isRoofCollapseDebris
+        ? Math.min(currentVelocity.y, -0.08)
+        : isStructuralWallDebris
+          ? Math.min(currentVelocity.y, -0.18)
+          : Math.max(0.2, currentVelocity.y),
+      z: push.z * (isRoofCollapseDebris ? 0.55 : isStructuralWallDebris ? 0.42 : 1.4),
+    },
+    true,
+  );
 }
 
 function countDynamicEntitiesOverlappingBox(
@@ -3909,8 +6542,16 @@ function resolveDebrisAgainstBulldozer(): void {
     if (entity.kind !== 'debris' && entity.kind !== 'column' && entity.kind !== 'deck') {
       continue;
     }
-    separateDynamicEntityFromBox(entity, chassisCenter, forward, right, bulldozer.halfExtents);
-    separateDynamicEntityFromBox(entity, cabCenter, forward, right, cabHalf);
+    if (!entity.body.isDynamic() || entity.carried) {
+      continue;
+    }
+
+    if (!isEntityNearBulldozer(entity, 4.8)) {
+      continue;
+    }
+
+    separateDynamicEntityFromBox(entity, chassisCenter, forward, right, bulldozer.halfExtents, true);
+    separateDynamicEntityFromBox(entity, cabCenter, forward, right, cabHalf, true);
     separateDynamicEntityFromBox(entity, bladePosition, forward, right, bladeHalf, true);
   }
 }
@@ -3925,7 +6566,10 @@ function stepSimulation(dt: number): void {
   updateBulldozerControls(dt);
   updateCarriedDebris();
   reactivateSettledDebrisNearBulldozer();
+  driveStructuralWallDebrisTowardFlatFall();
+  stabilizeCollapsedRoofDebris();
   physicsWorld.step();
+  stabilizeCollapsedRoofDebris();
   processVehicleDamage();
   const dynamicStructureActiveAfterVehicle = dynamicStructureActiveBefore || entities.some((entity) => (
     entity.body.isDynamic() &&
@@ -3940,18 +6584,30 @@ function stepSimulation(dt: number): void {
 
   const structuralCountAfter = state.wallPiecesBroken + state.visualWallImpacts + state.secondaryWallImpacts;
 
-  if (structuralCountAfter !== structuralCountBefore || (dynamicStructureActiveAfterVehicle && simulationStep % 4 === 0)) {
+  if (structuralCountAfter !== structuralCountBefore || dynamicStructureActiveAfterVehicle || hasActiveWallFaceStress()) {
     releaseUnsupportedWallBlocks();
     releaseUnsupportedStaticWallVisuals();
+    updateWallGravitySag();
+    driveStructuralWallDebrisTowardFlatFall();
   }
 
   resolveDebrisAgainstBulldozer();
+  stabilizeCollapsedRoofDebris();
   settleDynamicRubble();
   entities.forEach(syncMeshFromBody);
+  updateDemolitionRecorder();
 }
 
 function simulationNeedsStep(): boolean {
-  if (keys.size > 0 || controlOverride || state.carriedPieces > 0 || Math.abs(dozerSpeed) > 0.01) {
+  if (
+    keys.size > 0 ||
+    controlOverride ||
+    touchControlOverride ||
+    demolitionReplayRecording.recording ||
+    state.carriedPieces > 0 ||
+    Math.abs(dozerSpeed) > 0.01 ||
+    hasActiveWallFaceStress()
+  ) {
     return true;
   }
 
@@ -3960,6 +6616,13 @@ function simulationNeedsStep(): boolean {
 
 function update(delta: number): void {
   const clampedDelta = Math.min(0.08, delta);
+
+  if (demolitionReplayPlayback.active) {
+    updateDemolitionReplayPlayback();
+    updateCamera(clampedDelta);
+    updateHud();
+    return;
+  }
 
   if (!simulationNeedsStep()) {
     accumulatedTime = 0;
@@ -4018,24 +6681,131 @@ function animate(): void {
 }
 
 function createGui(): void {
-  const gui = new GUI({ title: 'Prototype Physics' });
+  const gui = new GUI({ title: 'House Destruction Tuning' });
+  const wallFolder = gui.addFolder('Wall response');
+  const supportFolder = gui.addFolder('Support and roof');
+  const dozerFolder = gui.addFolder('Bulldozer');
+  const replayFolder = gui.addFolder('Demolition Replay');
 
-  gui.add(draftSettings, 'engineTorque', 20, 140, 1).name('engine torque');
-  gui.add(draftSettings, 'columnStageOneDamage', 6, 40, 1).name('column crack damage');
-  gui.add(draftSettings, 'columnStageTwoDamage', 16, 80, 1).name('column break damage');
-  gui.add(draftSettings, 'bridgeCollapseThreshold', 1, 8, 1).name('bridge collapse supports');
-  gui.add(draftSettings, 'destructionSpeed', 0.5, 3.5, 0.1).name('destruction speed');
-  gui.add(draftSettings, 'debrisPickupRange', 1.2, 5.5, 0.1).name('pickup range');
-  gui.add(draftSettings, 'maxCarryMass', 20, 140, 1).name('carry mass');
-  gui.add(draftSettings, 'quality', ['Low', 'Medium', 'High']).name('quality');
+  gui.add(draftSettings, 'resetScene').name('Reset Scene');
+  wallFolder.add(draftSettings, 'wallBreakDamage', 8, 36, 1).name('brick toughness');
+  wallFolder.add(draftSettings, 'wallImpactDamageScale', 0.35, 1.4, 0.05).name('blade damage scale');
+  wallFolder.add(draftSettings, 'secondaryImpactThreshold', 18, 80, 1).name('rubble hit threshold');
+  wallFolder.add(draftSettings, 'destructionSpeed', 0.5, 3.5, 0.1).name('debris throw speed');
+  supportFolder.add(draftSettings, 'supportReleaseRatio', 0.18, 0.75, 0.01).name('wall support loss');
+  supportFolder.add(draftSettings, 'roofDropSupportRatio', 0.12, 0.7, 0.01).name('roof drop support');
+  supportFolder
+    .add(draftSettings, 'criticalBearingDelayFrames', 30, 300, 5)
+    .name('lean delay frames')
+    .onChange((value: number) => {
+      const delayFrames = Math.round(THREE.MathUtils.clamp(value, 30, 300));
+
+      draftSettings.criticalBearingDelayFrames = delayFrames;
+      tuning.criticalBearingDelayFrames = delayFrames;
+      saveSettings();
+    });
+  supportFolder
+    .add(draftSettings, 'criticalBearingLeanSpeed', 0.05, 1.45, 0.05)
+    .name('lean speed')
+    .onChange((value: number) => {
+      const leanSpeed = THREE.MathUtils.clamp(value, 0.05, 1.45);
+
+      draftSettings.criticalBearingLeanSpeed = leanSpeed;
+      tuning.criticalBearingLeanSpeed = leanSpeed;
+      saveSettings();
+    });
+  dozerFolder.add(draftSettings, 'engineTorque', 20, 140, 1).name('engine torque');
+  dozerFolder.add(draftSettings, 'debrisPickupRange', 1.2, 5.5, 0.1).name('pickup range');
+  dozerFolder.add(draftSettings, 'maxCarryMass', 20, 140, 1).name('carry mass');
+  replayFolder.add(replayUiState, 'play').name('Replay / Play');
+  replayFolder.add(replayUiState, 'pause').name('Pause');
+  replayFolder.add(replayUiState, 'stop').name('Stop');
+  replayFolder.add(replayUiState, 'stepBack').name('Back');
+  replayFolder.add(replayUiState, 'stepForward').name('Forward');
+  replayScrubController = replayFolder
+    .add(replayUiState, 'currentTime', 0, 0.1, 0.01)
+    .name('timeline')
+    .onChange((value: number) => {
+      if (!demolitionReplayRecording.complete) {
+        return;
+      }
+      demolitionReplayPlayback.active = true;
+      demolitionReplayPlayback.playing = false;
+      demolitionReplayPlayback.currentTime = THREE.MathUtils.clamp(Number(value), 0, demolitionReplayRecording.duration);
+      setReplayLiveSourcesVisible(false);
+      applyDemolitionReplayTime(getReplayDisplayTime());
+    });
+  replayFolder
+    .add(replayUiState, 'hValue', 0.1, 4, 0.05)
+    .name('H Value')
+    .onChange((value: number) => {
+      demolitionReplayPlayback.speed = THREE.MathUtils.clamp(Number(value), 0.1, 4);
+      updateReplayUiReadouts();
+    });
+  replayFolder
+    .add(replayUiState, 'selectedWall', ['all', ...replayFaces])
+    .name('wall selector')
+    .onChange((value: HouseBlockFace | 'all') => {
+      demolitionReplayPlayback.selectedWall = value;
+      applyDemolitionReplayTime(getReplayDisplayTime());
+    });
+  replayFolder
+    .add(replayUiState, 'focusSelectedWall')
+    .name('focus selected wall')
+    .onChange((value: boolean) => {
+      demolitionReplayPlayback.focusSelectedWall = value;
+    });
+  replayFolder
+    .add(replayUiState, 'isolateSelectedWall')
+    .name('isolate selected wall')
+    .onChange((value: boolean) => {
+      demolitionReplayPlayback.isolateSelectedWall = value;
+      applyDemolitionReplayTime(getReplayDisplayTime());
+    });
+  replayFolder
+    .add(replayUiState, 'showGhostOriginal')
+    .name('ghost original structure')
+    .onChange((value: boolean) => {
+      demolitionReplayPlayback.showGhostOriginal = value;
+      applyDemolitionReplayTime(getReplayDisplayTime());
+    });
+  replayFolder
+    .add(replayUiState, 'reverseReconstruction')
+    .name('reverse reconstruction')
+    .onChange((value: boolean) => {
+      demolitionReplayPlayback.reverseReconstruction = value;
+      applyDemolitionReplayTime(getReplayDisplayTime());
+    });
+  replayFolder
+    .add(replayUiState, 'cameraMode', ['free', 'follow-bulldozer', 'follow-wall', 'gameplay', 'top-down', 'cinematic'])
+    .name('camera mode')
+    .onChange((value: ReplayCameraMode) => {
+      demolitionReplayPlayback.cameraMode = value;
+    });
+  replayFolder.add(replayUiState, 'stats').name('stats').listen();
+  replayFolder.add(replayUiState, 'eventMarkers').name('markers').listen();
   gui.add(draftSettings, 'apply').name('Apply Settings');
+  wallFolder.open();
+  supportFolder.open();
+  replayFolder.open();
   gui.domElement.style.display = 'none';
   debugGui = gui;
+  replayUiControllers = [
+    ...((replayFolder as unknown as { controllers?: Array<ReturnType<GUI['add']>> }).controllers ?? []),
+  ];
+  updateReplayUiReadouts();
 }
 
 function buildDebugPayload(): string {
   const dozerPosition = bulldozer?.body.translation();
   const speed = bulldozer ? Math.abs(dozerSpeed) : 0;
+  const structuralStats = updateStructuralSupportGraph();
+  const roofCollapseDebris = entities.filter((entity) => entity.mesh.userData.roofCollapseDebris && entity.body.isDynamic());
+  const roofCollapseMaxY = roofCollapseDebris.reduce((maxY, entity) => Math.max(maxY, entity.body.translation().y), 0);
+  const roofCollapseMaxUpVelocity = roofCollapseDebris.reduce((maxVelocity, entity) => Math.max(maxVelocity, entity.body.linvel().y), -Infinity);
+  let chassisOverlappingDynamicBlocks = 0;
+  let chassisRestingDynamicBlocks = 0;
+  let structuralDebrisNearDozer = 0;
   let bladeRestingDynamicBlocks = 0;
   let cabOverlappingDynamicBlocks = 0;
 
@@ -4048,6 +6818,15 @@ function buildDebugPayload(): string {
       .setY(dozerPosition.y + cabLocalOffset.y);
     const bladeCenter = getBladeWorldPosition(new THREE.Vector3());
 
+    chassisOverlappingDynamicBlocks = countDynamicEntitiesOverlappingBox(new THREE.Vector3(dozerPosition.x, dozerPosition.y, dozerPosition.z), forward, right, bulldozer.halfExtents);
+    chassisRestingDynamicBlocks = countDynamicEntitiesRestingOnBoxTop(new THREE.Vector3(dozerPosition.x, dozerPosition.y, dozerPosition.z), forward, right, bulldozer.halfExtents);
+    structuralDebrisNearDozer = entities.filter((entity) => {
+      if (!entity.mesh.userData.structuralCollapseDebris || !entity.body.isDynamic()) {
+        return false;
+      }
+      const position = entity.body.translation();
+      return Math.hypot(position.x - dozerPosition.x, position.z - dozerPosition.z) < 9;
+    }).length;
     bladeRestingDynamicBlocks = countDynamicEntitiesRestingOnBoxTop(bladeCenter, forward, right, bladeHalf);
     cabOverlappingDynamicBlocks = countDynamicEntitiesOverlappingBox(cabCenter, forward, right, cabHalf);
   }
@@ -4074,16 +6853,24 @@ function buildDebugPayload(): string {
       gravity: tuning.gravity,
       kinematicBodies: entities.filter((entity) => entity.body.isKinematic()).length,
       maxCarryMass: tuning.maxCarryMass,
+      vehicleMotion: 'kinematic-position-target',
     },
     settings: {
       applied: tuning,
-      draftQuality: draftSettings.quality,
+      draftCriticalBearingDelayFrames: Number(draftSettings.criticalBearingDelayFrames.toFixed(0)),
+      draftCriticalBearingLeanSpeed: Number(draftSettings.criticalBearingLeanSpeed.toFixed(2)),
       draftDestructionSpeed: Number(draftSettings.destructionSpeed.toFixed(1)),
+      draftRoofDropSupportRatio: Number(draftSettings.roofDropSupportRatio.toFixed(2)),
+      draftSecondaryImpactThreshold: Number(draftSettings.secondaryImpactThreshold.toFixed(0)),
+      draftSupportReleaseRatio: Number(draftSettings.supportReleaseRatio.toFixed(2)),
+      draftWallBreakDamage: Number(draftSettings.wallBreakDamage.toFixed(0)),
+      draftWallImpactDamageScale: Number(draftSettings.wallImpactDamageScale.toFixed(2)),
     },
     state,
     bulldozer: dozerPosition
       ? {
           speed: Number(speed.toFixed(2)),
+          turnSpeed: Number(dozerTurnSpeed.toFixed(3)),
           x: Number(dozerPosition.x.toFixed(2)),
           y: Number(dozerPosition.y.toFixed(2)),
           yaw: Number(dozerYaw.toFixed(3)),
@@ -4111,15 +6898,30 @@ function buildDebugPayload(): string {
       glassShatterEvents: state.glassShatterEvents,
       roomFloors: entities.filter((entity) => entity.name.includes('room-floor')).length,
       roomPartitions: entities.filter((entity) => entity.name.includes('interior-')).length,
+      roofCollapseDebris: roofCollapseDebris.length,
+      roofCollapseMaxUpVelocity: Number((roofCollapseDebris.length > 0 ? roofCollapseMaxUpVelocity : 0).toFixed(3)),
+      roofCollapseMaxY: Number(roofCollapseMaxY.toFixed(2)),
       fracturedBlocks: fracturedWallBlockCount,
       intactBrickVisuals: getIntactBrickVisualCount(),
       independentBrickVisuals: getIndependentBrickVisualCount(),
       independentPhysicalBricks: entities.filter((entity) => entity.name.includes('-independent-brick-')).length,
       dynamicDebris: getDynamicDebrisCount(),
+      structural: {
+        bonds: structuralBonds.length,
+        brokenBonds: structuralStats.brokenBonds,
+        islands: structuralStats.islandCount,
+        nodes: structuralStats.nodes,
+        unsupportedIslands: structuralStats.unsupportedIslands,
+        unsupportedNodes: structuralStats.unsupportedNodes.size,
+      },
       settledVisualDebris: settledDebrisVisuals.length,
+      floatingSettledDebris: getFloatingSettledDebrisCount(),
       reactivatableDebris: settledDebrisVisuals.filter((object) => object.userData.settledDebris).length,
       shardDebris: entities.filter((entity) => entity.name.includes('-shard-')).length,
       airborneDynamicDebris: getAirborneDynamicDebrisCount(),
+      chassisOverlappingDynamicBlocks,
+      chassisRestingDynamicBlocks,
+      structuralDebrisNearDozer,
       bladeRestingDynamicBlocks,
       staticVisualBlocks: staticWallVisuals.length,
       taggedStaticVisualBlocks: staticWallVisuals.filter((object) => getStaticWallVisualInfo(object)).length,
@@ -4134,12 +6936,43 @@ function buildDebugPayload(): string {
         right: wallBlocks.filter((block) => block.wallBlock?.face === 'right').length,
         roof: wallBlocks.filter((block) => block.wallBlock && isRoofFace(block.wallBlock.face)).length,
       },
+      faceStress: Object.fromEntries(
+        (['front', 'back', 'left', 'right'] as HouseBlockFace[]).map((face) => {
+          const stress = getWallFaceStress(face);
+          return [face, {
+            collapse: Number(stress.collapse.toFixed(3)),
+            criticalBearingSteps: stress.criticalBearingSteps,
+            direction: stress.direction,
+            foundationRatio: Number(stress.foundationRatio.toFixed(3)),
+            imbalance: Number(stress.imbalance.toFixed(3)),
+            lastBearingContactStep: stress.lastBearingContactStep,
+            lean: Number(stress.lean.toFixed(3)),
+            supportRatio: Number(stress.supportRatio.toFixed(3)),
+          }];
+        }),
+      ),
+      facePanelLeanAngles: Object.fromEntries(
+        (['front', 'back', 'left', 'right'] as HouseBlockFace[]).map((face) => [
+          face,
+          Number(getWallFacePanelLeanAngle(face).toFixed(3)),
+        ]),
+      ),
+      faceForwardLeanAngles: Object.fromEntries(
+        (['front', 'back', 'left', 'right'] as HouseBlockFace[]).map((face) => [
+          face,
+          Number(getWallFaceForwardPanelLeanAngle(face).toFixed(3)),
+        ]),
+      ),
       maxBulge: Number(
         wallBlocks.reduce((largest, block) => Math.max(largest, block.wallBlock?.bulge.length() ?? 0), 0).toFixed(3),
       ),
+      maxGravitySag: Number(
+        wallBlocks.reduce((largest, block) => Math.max(largest, Math.max(0, -(block.wallBlock?.sag.y ?? 0))), 0).toFixed(3),
+      ),
+      saggingBlocks: wallBlocks.filter((block) => Math.max(0, -(block.wallBlock?.sag.y ?? 0)) > 0.05).length,
       cabOverlappingDynamicBlocks,
       totalBlocks: wallBlocks.length,
-      unsupportedFixedBlocks: wallBlocks.filter((block) => {
+      directVerticalSupportGaps: wallBlocks.filter((block) => {
         const info = block.wallBlock;
 
         if (!info || isRoofFace(info.face) || info.row === 0 || block.stage >= 2) {
@@ -4149,6 +6982,50 @@ function buildDebugPayload(): string {
         const support = getHouseBlock(info.face, info.row - 1, info.column);
         return !support || support.stage >= 2;
       }).length,
+      unsupportedFixedBlocks: wallBlocks.filter((block) => {
+        const info = block.wallBlock;
+
+        if (!info || isRoofFace(info.face) || info.row === 0 || block.stage >= 2) {
+          return false;
+        }
+
+        return isStructuralNodeUnsupported(info, structuralStats);
+      }).length,
+    },
+    replay: {
+      active: demolitionReplayPlayback.active,
+      cameraMode: demolitionReplayPlayback.cameraMode,
+      complete: demolitionReplayRecording.complete,
+      currentTime: Number(demolitionReplayPlayback.currentTime.toFixed(2)),
+      displayTime: Number(getReplayDisplayTime().toFixed(2)),
+      duration: Number(demolitionReplayRecording.duration.toFixed(2)),
+      events: demolitionReplayRecording.events.length,
+      frames: demolitionReplayRecording.frames.length,
+      hValue: Number(demolitionReplayPlayback.speed.toFixed(2)),
+      markers: demolitionReplayRecording.events.slice(-6).map((event) => ({
+        face: event.face ?? 'global',
+        time: Number(event.timestamp.toFixed(2)),
+        type: event.type,
+      })),
+      playing: demolitionReplayPlayback.playing,
+      proxyObjects: demolitionReplayRecording.objects.size,
+      proxiesVisible: Array.from(demolitionReplayRecording.objects.values()).filter((object) => object.proxy.visible).length,
+      recording: demolitionReplayRecording.recording,
+      reverseReconstruction: demolitionReplayPlayback.reverseReconstruction,
+      selectedWall: demolitionReplayPlayback.selectedWall,
+      wallTracks: Object.fromEntries(
+        replayFaces.map((face) => {
+          const track = demolitionReplayRecording.wallTracks.get(face);
+
+          return [face, {
+            destroyedTime: track?.destroyedTime === null || !track ? null : Number(track.destroyedTime.toFixed(2)),
+            events: track?.events.length ?? 0,
+            firstContactTime: track?.firstContactTime === null || !track ? null : Number(track.firstContactTime.toFixed(2)),
+            firstDamageTime: track?.firstDamageTime === null || !track ? null : Number(track.firstDamageTime.toFixed(2)),
+            samples: track?.samples.length ?? 0,
+          }];
+        }),
+      ),
     },
   });
 }
@@ -4173,9 +7050,32 @@ function drivePrototypeForTest(frames = 120, throttle = 1, steering = 0, lowerBl
   return JSON.parse(buildDebugPayload()) as unknown;
 }
 
+function touchSteeringWheelForTest(steering = -1, frames = 90): unknown {
+  resetPrototype();
+  const before = JSON.parse(buildDebugPayload()) as unknown;
+  touchControlState.steering = THREE.MathUtils.clamp(Number(steering), -1, 1);
+  updateTouchControlOverride();
+
+  const steps = Math.max(1, Math.min(240, Math.floor(Number(frames))));
+
+  for (let index = 0; index < steps; index += 1) {
+    update(fixedDt);
+  }
+
+  touchControlState.steering = 0;
+  updateTouchControlOverride();
+  render();
+
+  return {
+    after: JSON.parse(buildDebugPayload()) as unknown,
+    before,
+  };
+}
+
 function setBulldozerPoseForTest(x: number, z: number, yaw = 0): void {
   dozerYaw = yaw;
   dozerSpeed = 0;
+  dozerTurnSpeed = 0;
   tempQuat.setFromAxisAngle(yAxis, dozerYaw);
   const position = new THREE.Vector3(x, dozerGroundY, z);
   const forward = tempForward.set(0, 0, -1).applyQuaternion(tempQuat).setY(0).normalize();
@@ -4201,16 +7101,112 @@ function reverseDamageForTest(): unknown {
   return drivePrototypeForTest(140, -1, 0, false);
 }
 
+function rearReverseWallContactForTest(): unknown {
+  resetPrototype();
+  const before = JSON.parse(buildDebugPayload()) as Record<string, unknown>;
+
+  // Face away from the front wall, then reverse so the chassis rear hits first.
+  setBulldozerPoseForTest(0, solidWallZ + bulldozer.halfExtents.z + solidWallThickness + 0.28, Math.PI);
+  const after = drivePrototypeForTest(90, -1, 0, false) as Record<string, unknown>;
+
+  return {
+    after,
+    before,
+    rearReverseContact: {
+      impactEventsDelta: Number((after.state as PrototypeState).impactEvents) - Number((before.state as PrototypeState).impactEvents),
+      wallPiecesDelta: Number((after.state as PrototypeState).wallPiecesBroken) - Number((before.state as PrototypeState).wallPiecesBroken),
+    },
+  };
+}
+
+function sideRearReverseWallContactForTest(): unknown {
+  resetPrototype();
+  const before = JSON.parse(buildDebugPayload()) as Record<string, unknown>;
+  const rightWallX = solidWallWidth / 2 + solidWallThickness / 2;
+  const rearOffset = Math.max(2.0, bulldozer.halfExtents.z - 0.35);
+
+  // Match the side-wall screenshot: blade points away from the house, rear backs into the right wall.
+  setBulldozerPoseForTest(rightWallX + rearOffset + solidWallThickness + 0.42, houseCenterZ, -Math.PI / 2);
+  const after = drivePrototypeForTest(100, -1, 0, false) as Record<string, unknown>;
+
+  return {
+    after,
+    before,
+    sideRearReverseContact: {
+      impactEventsDelta: Number((after.state as PrototypeState).impactEvents) - Number((before.state as PrototypeState).impactEvents),
+      rightFaceRemaining: Number((after.wall as { faceBlocks?: { right?: number } }).faceBlocks?.right ?? 0),
+      wallPiecesDelta: Number((after.state as PrototypeState).wallPiecesBroken) - Number((before.state as PrototypeState).wallPiecesBroken),
+    },
+  };
+}
+
 function sideDamageForTest(): unknown {
   resetPrototype();
   setBulldozerPoseForTest(solidWallWidth / 2 + 3.4, houseCenterZ, Math.PI / 2);
   return drivePrototypeForTest(130, 1, 0, false);
 }
 
+function sideWallBumpResilienceForTest(): unknown {
+  resetPrototype();
+  const before = JSON.parse(buildDebugPayload()) as unknown;
+  const startColumn = Math.max(1, Math.floor(wallSideColumns * 0.3));
+  const endColumn = Math.min(wallSideColumns - 2, startColumn + 2);
+
+  for (let column = startColumn; column <= endColumn; column += 1) {
+    const block = getHouseBlock('right', 0, column);
+
+    if (block) {
+      breakWallBlock(block, new THREE.Vector3(5.2, 0.45, 0), new THREE.Vector3(0.32, -0.04, 0));
+    }
+  }
+
+  releaseUnsupportedWallBlocks();
+  updateWallGravitySag();
+
+  for (let index = 0; index < 220; index += 1) {
+    update(fixedDt);
+  }
+
+  cameraPanOffset.set(solidWallWidth * 0.16, 0, -houseDepth * 0.05);
+  cameraYaw = -0.92;
+  cameraPitch = 0.3;
+  cameraDistance = 38;
+  updateCamera(fixedDt);
+  render();
+
+  const after = JSON.parse(buildDebugPayload()) as unknown;
+
+  return { after, before };
+}
+
 function backDamageForTest(): unknown {
   resetPrototype();
   setBulldozerPoseForTest(0, solidWallZ - houseDepth - 3.4, Math.PI);
   return drivePrototypeForTest(130, 1, 0, false);
+}
+
+function stationaryTurnWallDamageForTest(frames = 120, steering = 1): unknown {
+  resetPrototype();
+  setBulldozerPoseForTest(solidWallWidth / 2 + 0.95, houseCenterZ, 0);
+  const before = JSON.parse(buildDebugPayload()) as Record<string, unknown>;
+  const after = drivePrototypeForTest(frames, 0, steering, false) as Record<string, unknown>;
+
+  cameraPanOffset.set(-solidWallWidth * 0.18, 0, -houseDepth * 0.12);
+  cameraYaw = -0.72;
+  cameraPitch = 0.32;
+  cameraDistance = 42;
+  updateCamera(fixedDt);
+  render();
+
+  return {
+    after,
+    before,
+    stationaryTurnTest: {
+      impactEventsDelta: Number((after.state as PrototypeState).impactEvents) - Number((before.state as PrototypeState).impactEvents),
+      steering,
+      wallPiecesDelta: Number((after.state as PrototypeState).wallPiecesBroken) - Number((before.state as PrototypeState).wallPiecesBroken),
+    },
+  };
 }
 
 function reactivateRubbleForTest(): unknown {
@@ -4318,7 +7314,7 @@ function staticSupportCollapseForTest(): unknown {
       const block = getHouseBlock('back', row, column);
 
       if (block) {
-        damageEntity(block, wallBlockBreakDamage + 2, new THREE.Vector3(0, 0.8, 4.8));
+        damageEntity(block, getWallBreakDamage() + 2, new THREE.Vector3(0, 0.8, 4.8));
       }
     }
   }
@@ -4411,7 +7407,7 @@ function interiorWallBreakForTest(): unknown {
   ));
 
   if (target) {
-    damageEntity(target, wallBlockBreakDamage + 2, new THREE.Vector3(0.9, 0.4, -4.8));
+    damageEntity(target, getWallBreakDamage() + 2, new THREE.Vector3(0.9, 0.4, -4.8));
   }
 
   for (let index = 0; index < 80; index += 1) {
@@ -4463,13 +7459,62 @@ function breakWallForTest(count = 8): unknown {
     const block = getWallBlock(row, column);
 
     if (block) {
-      damageEntity(block, wallBlockBreakDamage + 2, new THREE.Vector3(0, 1.1, -7.5));
+      damageEntity(block, getWallBreakDamage() + 2, new THREE.Vector3(0, 1.1, -7.5));
     }
   }
   update(fixedDt);
   render();
 
   return JSON.parse(buildDebugPayload()) as unknown;
+}
+
+function brickSizeMatchForTest(): unknown {
+  resetPrototype();
+  const block = getHouseBlock('front', 1, Math.floor(wallBlockColumns / 2));
+
+  if (!block?.wallBlock) {
+    return { error: 'front wall block not found' };
+  }
+
+  const sourceName = block.name;
+  const expectedCells = collectWorldBrickGridCells(block.halfExtents, block.wallBlock.home);
+  const expectedSizes = expectedCells.map((cell) => ({
+    x: Number(cell.scale.x.toFixed(3)),
+    y: Number(cell.scale.y.toFixed(3)),
+    z: Number(cell.scale.z.toFixed(3)),
+  }));
+
+  breakWallBlock(block, new THREE.Vector3(0, 1.1, -7.5));
+
+  const actualSizes = entities
+    .filter((entity) => entity.name.startsWith(`${sourceName}-independent-brick-`))
+    .map((entity) => ({
+      x: Number((entity.halfExtents.x * 2).toFixed(3)),
+      y: Number((entity.halfExtents.y * 2).toFixed(3)),
+      z: Number((entity.halfExtents.z * 2).toFixed(3)),
+    }));
+  const matches =
+    expectedSizes.length === actualSizes.length &&
+    expectedSizes.every((expected, index) => {
+      const actual = actualSizes[index];
+
+      return Boolean(
+        actual &&
+        Math.abs(actual.x - expected.x) < 0.001 &&
+        Math.abs(actual.y - expected.y) < 0.001 &&
+        Math.abs(actual.z - expected.z) < 0.001,
+      );
+    });
+
+  render();
+
+  return {
+    actualCount: actualSizes.length,
+    actualSizes,
+    expectedCount: expectedSizes.length,
+    expectedSizes,
+    matches,
+  };
 }
 
 function supportCollapseForTest(): unknown {
@@ -4492,7 +7537,7 @@ function broadFrontSupportCollapseForTest(): unknown {
       const block = getHouseBlock('front', row, column);
 
       if (block) {
-        damageEntity(block, wallBlockBreakDamage + 2, new THREE.Vector3(0, 1.1, -7.5));
+        damageEntity(block, getWallBreakDamage() + 2, new THREE.Vector3(0, 1.1, -7.5));
       }
     }
   }
@@ -4510,6 +7555,105 @@ function broadFrontSupportCollapseForTest(): unknown {
   return { before, after };
 }
 
+function bottomFoundationCollapseForTest(frames = 320): unknown {
+  resetPrototype();
+  const before = JSON.parse(buildDebugPayload()) as unknown;
+
+  for (let column = 0; column < wallBlockColumns; column += 1) {
+    const block = getHouseBlock('front', 0, column);
+
+    if (block) {
+      breakWallBlock(block, new THREE.Vector3(0, 0.55, -5.2), new THREE.Vector3(0, -0.04, -0.32));
+    }
+  }
+
+  releaseUnsupportedWallBlocks();
+  updateWallGravitySag();
+
+  const steps = Math.max(1, Math.min(420, Math.floor(Number(frames))));
+
+  for (let index = 0; index < steps; index += 1) {
+    update(fixedDt);
+  }
+
+  cameraPanOffset.set(0, 0, -houseDepth * 0.12);
+  cameraYaw = 0;
+  cameraPitch = 0.24;
+  cameraDistance = 42;
+  updateCamera(fixedDt);
+  render();
+
+  const after = JSON.parse(buildDebugPayload()) as unknown;
+
+  return { before, after };
+}
+
+function partialFrontSupportCollapseForTest(): unknown {
+  resetPrototype();
+  const before = JSON.parse(buildDebugPayload()) as unknown;
+
+  for (let column = 0; column < wallBlockColumns; column += 1) {
+    if (column % 4 === 1) {
+      continue;
+    }
+
+    for (let row = 0; row < physicalWallRows; row += 1) {
+      const block = getHouseBlock('front', row, column);
+
+      if (block) {
+        damageEntity(block, getWallBreakDamage() + 2, new THREE.Vector3(0, 1.1, -7.5));
+      }
+    }
+  }
+
+  releaseUnsupportedWallBlocks();
+  releaseUnsupportedStaticWallVisuals();
+
+  for (let index = 0; index < 220; index += 1) {
+    update(fixedDt);
+  }
+  render();
+
+  const after = JSON.parse(buildDebugPayload()) as unknown;
+
+  return { before, after };
+}
+
+function largeGapSagForTest(): unknown {
+  resetPrototype();
+  const before = JSON.parse(buildDebugPayload()) as unknown;
+  const startColumn = Math.max(1, Math.floor(wallBlockColumns * 0.18));
+  const endColumn = Math.min(wallBlockColumns - 2, Math.ceil(wallBlockColumns * 0.78));
+
+  for (let column = startColumn; column <= endColumn; column += 1) {
+    for (let row = 0; row < physicalWallRows; row += 1) {
+      const block = getHouseBlock('front', row, column);
+
+      if (block) {
+        breakWallBlock(block, new THREE.Vector3(0, 0.65, -5.8), new THREE.Vector3(0, -0.04, -0.36));
+      }
+    }
+  }
+
+  releaseUnsupportedWallBlocks();
+  updateWallGravitySag();
+
+  for (let index = 0; index < 150; index += 1) {
+    update(fixedDt);
+  }
+
+  cameraPanOffset.set(0, 0, -houseDepth * 0.16);
+  cameraYaw = 0;
+  cameraPitch = 0.28;
+  cameraDistance = 46;
+  updateCamera(fixedDt);
+  render();
+
+  const after = JSON.parse(buildDebugPayload()) as unknown;
+
+  return { before, after };
+}
+
 function undermineWallSpanForTest(): unknown {
   resetPrototype();
 
@@ -4518,7 +7662,7 @@ function undermineWallSpanForTest(): unknown {
       const block = getWallBlock(row, column);
 
       if (block) {
-        damageEntity(block, wallBlockBreakDamage + 2, new THREE.Vector3(0, 1.1, -7.5));
+        damageEntity(block, getWallBreakDamage() + 2, new THREE.Vector3(0, 1.1, -7.5));
       }
     }
   }
@@ -4538,7 +7682,7 @@ function bulgeDirectionForTest(): unknown {
   const inwardBlock = getWallBlock(1, Math.floor(wallBlockColumns / 2));
 
   if (inwardBlock) {
-    damageEntity(inwardBlock, wallBlockBreakDamage * 0.45, new THREE.Vector3(0, 0, -5.2));
+    damageEntity(inwardBlock, getWallBreakDamage() * 0.45, new THREE.Vector3(0, 0, -5.2));
   }
 
   const inwardBulge = inwardBlock?.wallBlock?.bulge.z ?? 0;
@@ -4547,7 +7691,7 @@ function bulgeDirectionForTest(): unknown {
   const outwardBlock = getWallBlock(1, Math.floor(wallBlockColumns / 2));
 
   if (outwardBlock) {
-    damageEntity(outwardBlock, wallBlockBreakDamage * 0.45, new THREE.Vector3(0, 0, 5.2));
+    damageEntity(outwardBlock, getWallBreakDamage() * 0.45, new THREE.Vector3(0, 0, 5.2));
   }
 
   const outwardBulge = outwardBlock?.wallBlock?.bulge.z ?? 0;
@@ -4577,6 +7721,362 @@ function damageBridgeForTest(supportsToDestroy = 4): unknown {
   for (let index = 0; index < 120; index += 1) {
     update(fixedDt);
   }
+  render();
+
+  return JSON.parse(buildDebugPayload()) as unknown;
+}
+
+function roofCollapseForTest(frames = 120): unknown {
+  resetPrototype();
+
+  const frontRoof = getHouseBlock('roof-front', wallBlockRows, 0);
+  const backRoof = getHouseBlock('roof-back', wallBlockRows, 0);
+
+  if (frontRoof) {
+    breakWallBlock(frontRoof, new THREE.Vector3(0, -2.4, -0.25), new THREE.Vector3(0, -0.65, -0.04));
+  }
+  if (backRoof) {
+    breakWallBlock(backRoof, new THREE.Vector3(0, -2.4, 0.25), new THREE.Vector3(0, -0.65, 0.04));
+  }
+
+  const steps = Math.max(1, Math.min(300, Math.floor(Number(frames))));
+
+  for (let index = 0; index < steps; index += 1) {
+    update(fixedDt);
+  }
+
+  cameraPanOffset.set(0, 0, -houseDepth * 0.18);
+  cameraYaw = 0;
+  cameraPitch = 0.34;
+  cameraDistance = 48;
+  updateCamera(fixedDt);
+  render();
+
+  const roofPieces = entities.filter((entity) => entity.name.includes('house-roof-') && entity.kind === 'debris');
+  const payload = JSON.parse(buildDebugPayload()) as Record<string, unknown>;
+  const distances = roofPieces.map((piece) => {
+    const position = piece.body.translation();
+    return {
+      horizontal: Math.hypot(position.x, position.z - houseCenterZ),
+      y: position.y,
+    };
+  });
+
+  payload.roofCollapseTest = {
+    maxHorizontalDistance: Number(Math.max(0, ...distances.map((distance) => distance.horizontal)).toFixed(2)),
+    maxY: Number(Math.max(0, ...distances.map((distance) => distance.y)).toFixed(2)),
+    minY: Number(Math.min(0, ...distances.map((distance) => distance.y)).toFixed(2)),
+    roofPieces: roofPieces.length,
+  };
+
+  return payload;
+}
+
+function demolitionReplayForTest(frames = 260): unknown {
+  resetPrototype();
+  setBulldozerPoseForTest(0, solidWallZ + bulldozer.halfExtents.z + solidWallThickness + 0.16, 0);
+  drivePrototypeForTest(80, 1, 0, true);
+
+  if (!demolitionReplayRecording.recording && !demolitionReplayRecording.complete) {
+    startDemolitionRecording('front', 1);
+  }
+
+  for (let pass = 0; pass < 4 && wallBlocks.length > 0; pass += 1) {
+    for (const block of [...wallBlocks]) {
+      const face = block.wallBlock?.face ?? 'front';
+      const impulse = getFaceLowResistanceDirection(face).multiplyScalar(8).setY(isRoofFace(face) ? -2.2 : 0.8);
+
+      damageEntity(block, getWallBreakDamage() + 12, impulse);
+    }
+    update(fixedDt);
+  }
+
+  const steps = Math.max(1, Math.min(900, Math.floor(Number(frames))));
+
+  for (let index = 0; index < steps; index += 1) {
+    update(fixedDt);
+  }
+
+  if (demolitionReplayRecording.recording && getAttachedStructureBlockCount() === 0) {
+    finishDemolitionRecording('test forced completion');
+  }
+
+  playDemolitionReplay();
+  demolitionReplayPlayback.currentTime = demolitionReplayRecording.duration * 0.5;
+  demolitionReplayPlayback.selectedWall = 'front';
+  demolitionReplayPlayback.focusSelectedWall = true;
+  demolitionReplayPlayback.isolateSelectedWall = false;
+  demolitionReplayPlayback.showGhostOriginal = true;
+  demolitionReplayPlayback.cameraMode = 'follow-wall';
+  applyDemolitionReplayTime(getReplayDisplayTime());
+  pauseDemolitionReplay();
+  render();
+
+  const payload = JSON.parse(buildDebugPayload()) as Record<string, unknown>;
+
+  payload.demolitionReplayTest = {
+    complete: demolitionReplayRecording.complete,
+    duration: Number(demolitionReplayRecording.duration.toFixed(2)),
+    events: demolitionReplayRecording.events.length,
+    frames: demolitionReplayRecording.frames.length,
+    frontSamples: demolitionReplayRecording.wallTracks.get('front')?.samples.length ?? 0,
+    proxyObjects: demolitionReplayRecording.objects.size,
+    proxiesVisible: Array.from(demolitionReplayRecording.objects.values()).filter((object) => object.proxy.visible).length,
+    selectedWall: demolitionReplayPlayback.selectedWall,
+  };
+  return payload;
+}
+
+function asymmetricFrontSupportLeanForTest(frames = 240): unknown {
+  resetPrototype();
+
+  for (let row = 0; row < physicalWallRows; row += 1) {
+    for (let column = 0; column <= Math.floor(wallBlockColumns * 0.72); column += 1) {
+      const block = getHouseBlock('front', row, column);
+
+      if (block) {
+        breakWallBlock(block, new THREE.Vector3(-0.8, -0.45, -0.35), new THREE.Vector3(-0.08, -0.08, -0.04));
+      }
+    }
+  }
+
+  const steps = Math.max(1, Math.min(420, Math.floor(Number(frames))));
+
+  for (let index = 0; index < steps; index += 1) {
+    update(fixedDt);
+  }
+
+  cameraPanOffset.set(0, 0, -houseDepth * 0.18);
+  cameraYaw = 0;
+  cameraPitch = 0.32;
+  cameraDistance = 46;
+  updateCamera(fixedDt);
+  render();
+
+  return JSON.parse(buildDebugPayload()) as unknown;
+}
+
+function flatPanelFallForTest(frames = 280): unknown {
+  resetPrototype();
+  const before = JSON.parse(buildDebugPayload()) as unknown;
+
+  for (let row = 0; row < physicalWallRows; row += 1) {
+    for (let column = 0; column <= Math.floor(wallBlockColumns * 0.72); column += 1) {
+      const block = getHouseBlock('front', row, column);
+
+      if (block) {
+        breakWallBlock(block, new THREE.Vector3(-0.8, -0.55, 1.8), new THREE.Vector3(-0.08, -0.1, 0.16));
+      }
+    }
+  }
+
+  const steps = Math.max(1, Math.min(900, Math.floor(Number(frames))));
+
+  for (let index = 0; index < steps; index += 1) {
+    update(fixedDt);
+  }
+
+  cameraPanOffset.set(0, 0, -houseDepth * 0.12);
+  cameraYaw = -0.48;
+  cameraPitch = 0.44;
+  cameraDistance = 50;
+  updateCamera(fixedDt);
+  render();
+
+  const after = JSON.parse(buildDebugPayload()) as Record<string, unknown>;
+  const wall = after.wall as Record<string, unknown> | undefined;
+  const faceBlocks = wall?.faceBlocks as Record<string, number> | undefined;
+
+  return {
+    after,
+    before,
+    flatPanelFallTest: {
+      dynamicDebris: wall?.dynamicDebris,
+      faceForwardLeanFront: (wall?.faceForwardLeanAngles as Record<string, number> | undefined)?.front,
+      frontBlocks: faceBlocks?.front,
+      structuralWallReleases: wall?.structuralWallReleases,
+    },
+  };
+}
+
+function criticalBottomBearingFallForTest(frames = 360): unknown {
+  resetPrototype();
+  const before = JSON.parse(buildDebugPayload()) as unknown;
+  const leaveColumn = wallBlockColumns - 1;
+
+  for (let column = 0; column < wallBlockColumns; column += 1) {
+    if (column === leaveColumn) {
+      continue;
+    }
+
+    const block = getHouseBlock('front', 0, column);
+
+    if (block) {
+      breakWallBlock(block, new THREE.Vector3(0, -0.35, 2.2), new THREE.Vector3(0, -0.08, 0.18));
+    }
+  }
+
+  releaseUnsupportedWallBlocks();
+  drivePrototypeForTest(80, -1, 0, false);
+
+  const steps = Math.max(1, Math.min(900, Math.floor(Number(frames))));
+
+  for (let index = 0; index < steps; index += 1) {
+    update(fixedDt);
+  }
+
+  cameraPanOffset.set(0, 0, -houseDepth * 0.1);
+  cameraYaw = -0.35;
+  cameraPitch = 0.42;
+  cameraDistance = 48;
+  updateCamera(fixedDt);
+  render();
+
+  const after = JSON.parse(buildDebugPayload()) as Record<string, unknown>;
+  const wall = after.wall as Record<string, unknown> | undefined;
+  const faceBlocks = wall?.faceBlocks as Record<string, number> | undefined;
+  const faceStress = wall?.faceStress as Record<string, Record<string, number>> | undefined;
+
+  return {
+    after,
+    before,
+    criticalBottomBearingFallTest: {
+      foundationRatio: faceStress?.front?.foundationRatio,
+      frontBlocks: faceBlocks?.front,
+      leftStandingBottomColumn: leaveColumn,
+      structuralWallReleases: wall?.structuralWallReleases,
+    },
+  };
+}
+
+function criticalSideBearingFallForTest(frames = 360): unknown {
+  resetPrototype();
+  const before = JSON.parse(buildDebugPayload()) as unknown;
+  const leaveColumn = wallSideColumns - 1;
+
+  for (let column = 0; column < wallSideColumns; column += 1) {
+    if (column === leaveColumn) {
+      continue;
+    }
+
+    const block = getHouseBlock('left', 0, column);
+
+    if (block) {
+      breakWallBlock(block, new THREE.Vector3(-2.4, -0.35, 0), new THREE.Vector3(-0.2, -0.08, 0));
+    }
+  }
+
+  releaseUnsupportedWallBlocks();
+  drivePrototypeForTest(80, -1, 0, false);
+
+  const steps = Math.max(1, Math.min(900, Math.floor(Number(frames))));
+
+  for (let index = 0; index < steps; index += 1) {
+    update(fixedDt);
+  }
+
+  cameraPanOffset.set(-houseDepth * 0.12, 0, -houseDepth * 0.04);
+  cameraYaw = -0.98;
+  cameraPitch = 0.4;
+  cameraDistance = 50;
+  updateCamera(fixedDt);
+  render();
+
+  const after = JSON.parse(buildDebugPayload()) as Record<string, unknown>;
+  const wall = after.wall as Record<string, unknown> | undefined;
+  const faceBlocks = wall?.faceBlocks as Record<string, number> | undefined;
+  const faceStress = wall?.faceStress as Record<string, Record<string, number>> | undefined;
+
+  return {
+    after,
+    before,
+    criticalSideBearingFallTest: {
+      foundationRatio: faceStress?.left?.foundationRatio,
+      leftBlocks: faceBlocks?.left,
+      leftStandingBottomColumn: leaveColumn,
+      structuralWallReleases: wall?.structuralWallReleases,
+    },
+  };
+}
+
+function bulldozerBlockedWallFallForTest(frames = 520): unknown {
+  resetPrototype();
+  setBulldozerPoseForTest(0, solidWallZ + bulldozer.halfExtents.z * 0.62, 0);
+  const before = JSON.parse(buildDebugPayload()) as unknown;
+  const leaveColumn = wallBlockColumns - 1;
+
+  for (let column = 0; column < wallBlockColumns; column += 1) {
+    if (column === leaveColumn) {
+      continue;
+    }
+
+    const block = getHouseBlock('front', 0, column);
+
+    if (block) {
+      breakWallBlock(block, new THREE.Vector3(0, -0.35, 2.2), new THREE.Vector3(0, -0.08, 0.18));
+    }
+  }
+
+  releaseUnsupportedWallBlocks();
+
+  const steps = Math.max(1, Math.min(900, Math.floor(Number(frames))));
+
+  for (let index = 0; index < steps; index += 1) {
+    update(fixedDt);
+  }
+
+  cameraPanOffset.set(0, 0, -houseDepth * 0.02);
+  cameraYaw = -0.28;
+  cameraPitch = 0.5;
+  cameraDistance = 38;
+  updateCamera(fixedDt);
+  render();
+
+  const after = JSON.parse(buildDebugPayload()) as Record<string, unknown>;
+  const wall = after.wall as Record<string, unknown> | undefined;
+
+  return {
+    after,
+    before,
+    bulldozerBlockedWallFallTest: {
+      bladeRestingDynamicBlocks: wall?.bladeRestingDynamicBlocks,
+      cabOverlappingDynamicBlocks: wall?.cabOverlappingDynamicBlocks,
+      chassisOverlappingDynamicBlocks: wall?.chassisOverlappingDynamicBlocks,
+      chassisRestingDynamicBlocks: wall?.chassisRestingDynamicBlocks,
+      structuralWallReleases: wall?.structuralWallReleases,
+    },
+  };
+}
+
+function criticalSideLeanPhaseForTest(frames = 8): unknown {
+  resetPrototype();
+  const leaveColumn = wallSideColumns - 1;
+
+  for (let column = 0; column < wallSideColumns; column += 1) {
+    if (column === leaveColumn) {
+      continue;
+    }
+
+    const block = getHouseBlock('left', 0, column);
+
+    if (block) {
+      breakWallBlock(block, new THREE.Vector3(-2.4, -0.35, 0), new THREE.Vector3(-0.2, -0.08, 0));
+    }
+  }
+
+  releaseUnsupportedWallBlocks();
+
+  const steps = Math.max(1, Math.min(900, Math.floor(Number(frames))));
+
+  for (let index = 0; index < steps; index += 1) {
+    update(fixedDt);
+  }
+
+  cameraPanOffset.set(-houseDepth * 0.12, 0, -houseDepth * 0.04);
+  cameraYaw = -0.98;
+  cameraPitch = 0.4;
+  cameraDistance = 50;
+  updateCamera(fixedDt);
   render();
 
   return JSON.parse(buildDebugPayload()) as unknown;
@@ -4672,6 +8172,153 @@ function bindInput(): void {
     }
   });
 
+  mobileControlsRoot?.querySelectorAll<HTMLButtonElement>('[data-touch-control]').forEach((button) => {
+    const action = button.dataset.touchControl;
+
+    const updateHeldControl = (pressed: boolean) => {
+      if (action === 'forward') {
+        touchControlState.forward = pressed;
+      } else if (action === 'reverse') {
+        touchControlState.reverse = pressed;
+      } else if (action === 'blade-up') {
+        touchControlState.raiseBlade = pressed;
+      } else if (action === 'blade-down') {
+        touchControlState.lowerBlade = pressed;
+      } else {
+        return;
+      }
+
+      button.classList.toggle('is-pressed', pressed);
+      updateTouchControlOverride();
+    };
+
+    button.addEventListener('pointerdown', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      button.setPointerCapture(event.pointerId);
+
+      if (action === 'pickup') {
+        pickupDebris();
+        return;
+      }
+      if (action === 'release') {
+        releaseDebris();
+        return;
+      }
+      if (action === 'recenter') {
+        recenterCamera();
+        return;
+      }
+      if (action === 'reset') {
+        resetPrototype();
+        return;
+      }
+
+      updateHeldControl(true);
+    });
+
+    const endTouchControl = (event: PointerEvent) => {
+      if (button.hasPointerCapture(event.pointerId)) {
+        button.releasePointerCapture(event.pointerId);
+      }
+      updateHeldControl(false);
+    };
+
+    button.addEventListener('pointerup', endTouchControl);
+    button.addEventListener('pointercancel', endTouchControl);
+    button.addEventListener('lostpointercapture', () => {
+      updateHeldControl(false);
+    });
+  });
+
+  mobileControlsRoot?.querySelectorAll<HTMLElement>('[data-touch-wheel]').forEach((wheel) => {
+    const setSteeringFromClientX = (clientX: number) => {
+      const rect = wheel.getBoundingClientRect();
+      const centerX = rect.left + rect.width * 0.5;
+      const normalized = THREE.MathUtils.clamp((clientX - centerX) / (rect.width * 0.38), -1, 1);
+
+      touchControlState.steering = -normalized;
+      wheel.style.setProperty('--wheel-rotation', `${normalized * 132}deg`);
+      wheel.setAttribute('aria-valuenow', String(Math.round(touchControlState.steering * 100)));
+      updateTouchControlOverride();
+    };
+
+    const resetSteeringWheel = () => {
+      touchControlState.steering = 0;
+      wheel.classList.remove('is-pressed');
+      wheel.style.setProperty('--wheel-rotation', '0deg');
+      wheel.setAttribute('aria-valuenow', '0');
+      updateTouchControlOverride();
+    };
+
+    wheel.addEventListener('pointerdown', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      wheel.setPointerCapture(event.pointerId);
+      wheel.classList.add('is-pressed');
+      setSteeringFromClientX(event.clientX);
+    });
+    wheel.addEventListener('pointermove', (event) => {
+      if (wheel.hasPointerCapture(event.pointerId)) {
+        event.preventDefault();
+        event.stopPropagation();
+        setSteeringFromClientX(event.clientX);
+      }
+    });
+    wheel.addEventListener('pointerup', (event) => {
+      if (wheel.hasPointerCapture(event.pointerId)) {
+        wheel.releasePointerCapture(event.pointerId);
+      }
+      resetSteeringWheel();
+    });
+    wheel.addEventListener('pointercancel', resetSteeringWheel);
+    wheel.addEventListener('touchstart', (event) => {
+      const touch = event.changedTouches[0];
+
+      if (!touch) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      wheel.classList.add('is-pressed');
+      setSteeringFromClientX(touch.clientX);
+    }, { passive: false });
+    wheel.addEventListener('touchmove', (event) => {
+      const touch = event.changedTouches[0];
+
+      if (!touch) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      setSteeringFromClientX(touch.clientX);
+    }, { passive: false });
+    wheel.addEventListener('touchend', resetSteeringWheel);
+    wheel.addEventListener('touchcancel', resetSteeringWheel);
+    wheel.addEventListener('keydown', (event) => {
+      if (event.code !== 'ArrowLeft' && event.code !== 'ArrowRight' && event.code !== 'Home') {
+        return;
+      }
+
+      event.preventDefault();
+      if (event.code === 'Home') {
+        touchControlState.steering = 0;
+      } else {
+        touchControlState.steering = THREE.MathUtils.clamp(
+          touchControlState.steering + (event.code === 'ArrowLeft' ? 0.16 : -0.16),
+          -1,
+          1,
+        );
+      }
+
+      wheel.style.setProperty('--wheel-rotation', `${-touchControlState.steering * 132}deg`);
+      wheel.setAttribute('aria-valuenow', String(Math.round(touchControlState.steering * 100)));
+      updateTouchControlOverride();
+    });
+  });
+
   window.addEventListener('keydown', (event) => {
     const code = normalizeGameCode(event);
 
@@ -4743,22 +8390,39 @@ function exposeTestHooks(): void {
   };
   window.prototype_pickup_for_test = pickupDebris;
   window.prototype_airborne_settle_guard_for_test = airborneSettleGuardForTest;
+  window.prototype_asymmetric_front_support_lean_for_test = asymmetricFrontSupportLeanForTest;
   window.prototype_back_damage_for_test = backDamageForTest;
   window.prototype_break_wall_for_test = breakWallForTest;
+  window.prototype_bottom_foundation_collapse_for_test = bottomFoundationCollapseForTest;
+  window.prototype_brick_size_match_for_test = brickSizeMatchForTest;
+  window.prototype_bulldozer_blocked_wall_fall_for_test = bulldozerBlockedWallFallForTest;
   window.prototype_bulge_direction_for_test = bulgeDirectionForTest;
   window.prototype_damage_bridge_for_test = damageBridgeForTest;
   window.prototype_drive_for_test = drivePrototypeForTest;
+  window.prototype_critical_bottom_bearing_fall_for_test = criticalBottomBearingFallForTest;
+  window.prototype_critical_side_lean_phase_for_test = criticalSideLeanPhaseForTest;
+  window.prototype_critical_side_bearing_fall_for_test = criticalSideBearingFallForTest;
+  window.prototype_demolition_replay_for_test = demolitionReplayForTest;
+  window.prototype_flat_panel_fall_for_test = flatPanelFallForTest;
   window.prototype_interior_wall_break_for_test = interiorWallBreakForTest;
+  window.prototype_large_gap_sag_for_test = largeGapSagForTest;
   window.prototype_material_breakage_for_test = materialBreakageForTest;
   window.prototype_reverse_damage_for_test = reverseDamageForTest;
+  window.prototype_rear_reverse_wall_contact_for_test = rearReverseWallContactForTest;
+  window.prototype_roof_collapse_for_test = roofCollapseForTest;
   window.prototype_release_for_test = releaseDebris;
   window.prototype_reactivate_rubble_for_test = reactivateRubbleForTest;
   window.prototype_reset_for_test = resetPrototype;
   window.prototype_secondary_wall_impact_for_test = secondaryWallImpactForTest;
   window.prototype_side_damage_for_test = sideDamageForTest;
+  window.prototype_side_rear_reverse_wall_contact_for_test = sideRearReverseWallContactForTest;
+  window.prototype_side_wall_bump_resilience_for_test = sideWallBumpResilienceForTest;
+  window.prototype_stationary_turn_wall_damage_for_test = stationaryTurnWallDamageForTest;
   window.prototype_static_support_collapse_for_test = staticSupportCollapseForTest;
   window.prototype_support_collapse_for_test = supportCollapseForTest;
+  window.prototype_touch_steering_wheel_for_test = touchSteeringWheelForTest;
   window.prototype_broad_front_support_collapse_for_test = broadFrontSupportCollapseForTest;
+  window.prototype_partial_front_support_collapse_for_test = partialFrontSupportCollapseForTest;
   window.prototype_undermine_wall_span_for_test = undermineWallSpanForTest;
   window.prototype_visual_wall_impact_for_test = visualWallImpactForTest;
 }
@@ -4769,13 +8433,68 @@ async function boot(): Promise<void> {
   addLightsAndGround();
   createBulldozer();
   createWallBuilding();
-  createBridge();
   bindInput();
   exposeTestHooks();
   createGui();
   applyQualitySettings();
   state.ready = true;
   animate();
+
+  const query = new URLSearchParams(window.location.search);
+
+  if (query.has('roofCollapseTest')) {
+    window.setTimeout(() => {
+      roofCollapseForTest(150);
+    }, 80);
+  } else if (query.has('replayTest')) {
+    window.setTimeout(() => {
+      demolitionReplayForTest(Number(query.get('replayTest') ?? 260));
+    }, 80);
+  } else if (query.has('flatPanelFallTest')) {
+    window.setTimeout(() => {
+      flatPanelFallForTest(Number(query.get('flatPanelFallTest') ?? 280));
+    }, 80);
+  } else if (query.has('criticalBottomTest')) {
+    window.setTimeout(() => {
+      criticalBottomBearingFallForTest(Number(query.get('criticalBottomTest') ?? 360));
+    }, 80);
+  } else if (query.has('criticalSideTest')) {
+    window.setTimeout(() => {
+      criticalSideBearingFallForTest(Number(query.get('criticalSideTest') ?? 360));
+    }, 80);
+  } else if (query.has('criticalSideLeanTest')) {
+    window.setTimeout(() => {
+      criticalSideLeanPhaseForTest(Number(query.get('criticalSideLeanTest') ?? 8));
+    }, 80);
+  } else if (query.has('bulldozerBlockedFallTest')) {
+    window.setTimeout(() => {
+      bulldozerBlockedWallFallForTest(Number(query.get('bulldozerBlockedFallTest') ?? 520));
+    }, 80);
+  } else if (query.has('angleLeanTest')) {
+    window.setTimeout(() => {
+      asymmetricFrontSupportLeanForTest(Number(query.get('angleLeanTest') ?? 12));
+    }, 80);
+  } else if (query.has('asymmetricLeanTest')) {
+    window.setTimeout(() => {
+      asymmetricFrontSupportLeanForTest(260);
+    }, 80);
+  } else if (query.has('bottomSupportTest')) {
+    window.setTimeout(() => {
+      bottomFoundationCollapseForTest();
+    }, 80);
+  } else if (query.has('broadSupportTest')) {
+    window.setTimeout(() => {
+      broadFrontSupportCollapseForTest();
+    }, 80);
+  } else if (query.has('sideResilienceTest')) {
+    window.setTimeout(() => {
+      sideWallBumpResilienceForTest();
+    }, 80);
+  } else if (query.has('stationaryTurnTest')) {
+    window.setTimeout(() => {
+      stationaryTurnWallDamageForTest(140, 1);
+    }, 80);
+  }
 }
 
 void boot();
@@ -4784,23 +8503,40 @@ declare global {
   interface Window {
     advanceTime?: (ms: number) => void;
     prototype_airborne_settle_guard_for_test?: () => unknown;
+    prototype_asymmetric_front_support_lean_for_test?: (frames?: number) => unknown;
     prototype_back_damage_for_test?: () => unknown;
+    prototype_bottom_foundation_collapse_for_test?: (frames?: number) => unknown;
     prototype_broad_front_support_collapse_for_test?: () => unknown;
+    prototype_brick_size_match_for_test?: () => unknown;
+    prototype_bulldozer_blocked_wall_fall_for_test?: (frames?: number) => unknown;
+    prototype_partial_front_support_collapse_for_test?: () => unknown;
     prototype_break_wall_for_test?: (count?: number) => unknown;
     prototype_bulge_direction_for_test?: () => unknown;
     prototype_damage_bridge_for_test?: (supportsToDestroy?: number) => unknown;
+    prototype_critical_bottom_bearing_fall_for_test?: (frames?: number) => unknown;
+    prototype_critical_side_lean_phase_for_test?: (frames?: number) => unknown;
+    prototype_critical_side_bearing_fall_for_test?: (frames?: number) => unknown;
+    prototype_demolition_replay_for_test?: (frames?: number) => unknown;
     prototype_drive_for_test?: (frames?: number, throttle?: number, steering?: number, lowerBlade?: boolean) => unknown;
+    prototype_flat_panel_fall_for_test?: (frames?: number) => unknown;
     prototype_interior_wall_break_for_test?: () => unknown;
+    prototype_large_gap_sag_for_test?: () => unknown;
     prototype_material_breakage_for_test?: () => unknown;
     prototype_pickup_for_test?: () => void;
+    prototype_rear_reverse_wall_contact_for_test?: () => unknown;
     prototype_reverse_damage_for_test?: () => unknown;
+    prototype_roof_collapse_for_test?: (frames?: number) => unknown;
     prototype_release_for_test?: () => void;
     prototype_reactivate_rubble_for_test?: () => unknown;
     prototype_reset_for_test?: () => void;
     prototype_secondary_wall_impact_for_test?: (speed?: number, mass?: number) => unknown;
     prototype_side_damage_for_test?: () => unknown;
+    prototype_side_rear_reverse_wall_contact_for_test?: () => unknown;
+    prototype_side_wall_bump_resilience_for_test?: () => unknown;
+    prototype_stationary_turn_wall_damage_for_test?: (frames?: number, steering?: number) => unknown;
     prototype_static_support_collapse_for_test?: () => unknown;
     prototype_support_collapse_for_test?: () => unknown;
+    prototype_touch_steering_wheel_for_test?: (steering?: number, frames?: number) => unknown;
     prototype_undermine_wall_span_for_test?: () => unknown;
     prototype_visual_wall_impact_for_test?: (speed?: number, mass?: number) => unknown;
     render_game_to_text?: () => string;

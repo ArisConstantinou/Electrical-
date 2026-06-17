@@ -4,19 +4,6 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="8" fill="%23242827"/><path d="M10 42h28l10-9h8v13H10z" fill="%23d4a321"/><rect x="13" y="46" width="32" height="8" rx="4" fill="%23545c59"/></svg>' />
-    <script>
-      const publicEnvironmentUrl = 'https://arisconstantinou.github.io/Game/destruction-prototype/';
-      const keepLocal = new URLSearchParams(window.location.search).get('local') === '1';
-      const isLocalEnvironment = ['localhost', '127.0.0.1', '::1', '192.168.1.135'].includes(window.location.hostname);
-
-      if (isLocalEnvironment && !keepLocal) {
-        const targetUrl = new URL(publicEnvironmentUrl);
-
-        targetUrl.search = window.location.search;
-        targetUrl.hash = window.location.hash;
-        window.location.replace(targetUrl.toString());
-      }
-    </script>
     <title>Bulldozer Destruction Prototype</title>
   </head>
   <body>
@@ -28,6 +15,32 @@
           <span id="fps-readout">FPS 0</span>
         </div>
         <div id="status-readout">Loading Rapier...</div>
+      </section>
+      <section id="mobile-controls" aria-label="Touch controls">
+        <div class="mobile-pad mobile-drive-pad">
+          <button class="touch-button touch-drive touch-pedal touch-up" type="button" data-touch-control="forward" aria-label="Drive forward">
+            <span aria-hidden="true" class="pedal-icon pedal-forward"></span>
+          </button>
+          <div class="touch-wheel" data-touch-wheel role="slider" aria-label="Steering wheel" aria-valuemin="-100" aria-valuemax="100" aria-valuenow="0" tabindex="0">
+            <span aria-hidden="true" class="steering-wheel">
+              <span class="steering-wheel-spoke steering-wheel-spoke-top"></span>
+              <span class="steering-wheel-spoke steering-wheel-spoke-left"></span>
+              <span class="steering-wheel-spoke steering-wheel-spoke-right"></span>
+              <span class="steering-wheel-hub"></span>
+            </span>
+          </div>
+          <button class="touch-button touch-drive touch-pedal touch-down" type="button" data-touch-control="reverse" aria-label="Reverse">
+            <span aria-hidden="true" class="pedal-icon pedal-reverse"></span>
+          </button>
+        </div>
+        <div class="mobile-pad mobile-action-pad">
+          <button class="touch-button touch-action" type="button" data-touch-control="blade-up" aria-label="Raise blade">Q</button>
+          <button class="touch-button touch-action" type="button" data-touch-control="blade-down" aria-label="Lower blade">E</button>
+          <button class="touch-button touch-action" type="button" data-touch-control="pickup" aria-label="Pick up debris">G</button>
+          <button class="touch-button touch-action" type="button" data-touch-control="release" aria-label="Release debris">X</button>
+          <button class="touch-button touch-action" type="button" data-touch-control="recenter" aria-label="Recenter camera">C</button>
+          <button class="touch-button touch-action touch-danger" type="button" data-touch-control="reset" aria-label="Reset prototype">T</button>
+        </div>
       </section>
     </main>
     <script type="module" src="/src/main.ts"></script>

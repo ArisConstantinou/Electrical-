@@ -12,6 +12,10 @@ body {
   font-family: Arial, Helvetica, sans-serif;
 }
 
+#mobile-controls {
+  display: none;
+}
+
 #game-canvas {
   cursor: grab;
   display: block;
@@ -60,6 +64,76 @@ body {
   white-space: pre-wrap;
 }
 
+.touch-button {
+  align-items: center;
+  appearance: none;
+  background: rgba(14, 31, 33, 0.78);
+  border: 1px solid rgba(224, 238, 231, 0.34);
+  border-radius: 10px;
+  color: #eef6f4;
+  display: inline-flex;
+  font: inherit;
+  font-size: 15px;
+  font-weight: 700;
+  justify-content: center;
+  letter-spacing: 0;
+  min-height: 48px;
+  min-width: 48px;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.touch-button.is-pressed,
+.touch-button:active {
+  background: rgba(214, 164, 72, 0.88);
+  border-color: rgba(255, 236, 182, 0.88);
+  color: #132224;
+}
+
+.touch-danger.is-pressed,
+.touch-danger:active {
+  background: rgba(211, 112, 79, 0.9);
+  border-color: rgba(255, 211, 196, 0.88);
+}
+
+.pedal-icon {
+  background: currentColor;
+  border-radius: 6px 6px 10px 10px;
+  display: block;
+  height: 30px;
+  position: relative;
+  transform: perspective(42px) rotateX(18deg);
+  width: 22px;
+}
+
+.pedal-icon::before,
+.pedal-icon::after {
+  background: rgba(14, 31, 33, 0.78);
+  border-radius: 999px;
+  content: "";
+  height: 3px;
+  left: 5px;
+  position: absolute;
+  right: 5px;
+}
+
+.pedal-icon::before {
+  top: 9px;
+}
+
+.pedal-icon::after {
+  top: 18px;
+}
+
+.pedal-forward::before {
+  box-shadow: 0 -7px 0 currentColor;
+}
+
+.pedal-reverse {
+  transform: perspective(42px) rotateX(18deg) rotate(180deg);
+}
+
 @media (max-width: 720px), (max-height: 460px) {
   .lil-gui {
     display: none !important;
@@ -84,5 +158,131 @@ body {
   #status-readout {
     font-size: 12px;
     line-height: 1.35;
+  }
+}
+
+@media (hover: none), (pointer: coarse) {
+  #mobile-controls {
+    bottom: 14px;
+    display: flex;
+    justify-content: space-between;
+    left: 14px;
+    pointer-events: none;
+    position: fixed;
+    right: 14px;
+    z-index: 10;
+  }
+
+  .mobile-pad {
+    display: grid;
+    gap: 8px;
+    pointer-events: auto;
+  }
+
+  .mobile-drive-pad {
+    align-items: center;
+    grid-template-columns: 66px 112px;
+    grid-template-rows: 66px 66px;
+    grid-template-areas:
+      "up wheel"
+      "down wheel";
+  }
+
+  .touch-pedal {
+    border-radius: 999px;
+    min-height: 62px;
+    min-width: 62px;
+  }
+
+  .touch-wheel {
+    --wheel-rotation: 0deg;
+    align-items: center;
+    appearance: none;
+    background:
+      radial-gradient(circle at 50% 50%, rgba(255, 236, 182, 0.18) 0 10%, transparent 11%),
+      radial-gradient(circle at 50% 50%, rgba(14, 31, 33, 0.86) 0 54%, rgba(30, 48, 48, 0.84) 55% 100%);
+    border: 1px solid rgba(224, 238, 231, 0.42);
+    border-radius: 999px;
+    box-shadow: inset 0 0 0 7px rgba(238, 246, 244, 0.12);
+    box-sizing: border-box;
+    color: #eef6f4;
+    display: flex;
+    grid-area: wheel;
+    height: 112px;
+    justify-content: center;
+    pointer-events: auto;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    width: 112px;
+  }
+
+  .touch-wheel.is-pressed {
+    border-color: rgba(255, 236, 182, 0.88);
+    box-shadow:
+      inset 0 0 0 7px rgba(238, 246, 244, 0.16),
+      0 0 0 3px rgba(214, 164, 72, 0.28);
+  }
+
+  .steering-wheel {
+    border: 6px solid currentColor;
+    border-radius: 999px;
+    box-sizing: border-box;
+    display: block;
+    height: 78px;
+    position: relative;
+    transform: rotate(var(--wheel-rotation));
+    width: 78px;
+  }
+
+  .steering-wheel-hub {
+    background: currentColor;
+    border-radius: 999px;
+    height: 14px;
+    left: 50%;
+    position: absolute;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 14px;
+  }
+
+  .steering-wheel-spoke {
+    background: currentColor;
+    border-radius: 999px;
+    left: 50%;
+    position: absolute;
+    top: 50%;
+    transform-origin: 0 50%;
+    width: 28px;
+    height: 5px;
+  }
+
+  .steering-wheel-spoke-top {
+    transform: rotate(-90deg) translateX(5px);
+  }
+
+  .steering-wheel-spoke-left {
+    transform: rotate(148deg) translateX(5px);
+  }
+
+  .steering-wheel-spoke-right {
+    transform: rotate(32deg) translateX(5px);
+  }
+
+  .touch-up {
+    grid-area: up;
+  }
+
+  .touch-down {
+    grid-area: down;
+  }
+
+  .mobile-action-pad {
+    grid-template-columns: repeat(2, minmax(52px, 64px));
+  }
+
+  .touch-action {
+    min-height: 44px;
+    min-width: 52px;
   }
 }
